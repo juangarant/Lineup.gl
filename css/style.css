@@ -1,0 +1,44 @@
+body {
+    margin: 0;
+    overflow: hidden; /* Evita las barras de desplazamiento */
+    background-color: #222; /* Fondo oscuro por si tarda en cargar */
+    font-family: 'Courier New', Courier, monospace; /* Fuente estilo militar */
+}
+
+#container {
+    width: 100vw;
+    height: 100vh;
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 1; /* El 3D va al fondo */
+}
+
+#ui-container {
+    position: absolute;
+    top: 20px;
+    width: 100%;
+    text-align: center;
+    color: white;
+    z-index: 10; /* La interfaz va por encima del 3D */
+    pointer-events: none; /* Para que los clics pasen al 3D */
+    text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+}
+
+#btn-lanzar {
+    pointer-events: auto; /* El botón */
+    padding: 15px 30px;
+    font-size: 18px;
+    background-color: #4CAF50;
+    color: white;
+    border: none;
+    cursor: pointer;
+    font-weight: bold;
+    border-radius: 5px;
+    margin-top: 20px;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+}
+
+#btn-lanzar:hover {
+    background-color: #45a049;
+}

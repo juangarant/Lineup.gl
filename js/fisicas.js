@@ -20,8 +20,8 @@ var granada_modelo_carga = null;
 const RADIO          = 0.5;
 const GRAVEDAD       = 0.016;    // Source 2 gravity feel por frame
 const DRAG_AIRE      = 0.9975;   // resistencia del aire (casi imperceptible)
-const VEL_LANZAM    = 1.9;      // módulo de fuerza del lanzamiento
-const IMPULSO_Y      = 0.85;    // componente vertical extra (arco parabólico)
+const VEL_LANZAM    = 1.45;     // modulo de fuerza del lanzamiento (mas suave)
+const IMPULSO_Y      = 0.0;      // sin impulso vertical extra para respetar mejor el apuntado
 
 // Coeficiente de Restitución (COR) — cuánta energía conserva el componente normal
 const COR_SUELO      = 0.40;    // hormigón: ~0.4 (como acero-hormigón real)
@@ -157,7 +157,6 @@ function cargarModeloGranada() {
 
                     normalizarEscalaModelo(modeloHorneado);
                     granada_modelo_base = encapsularModeloEnPivot(modeloHorneado);
-                    console.log("GLB cargado correctamente:", rutas[idx]);
                     if (typeof setUI === "function") setUI("GLB ACTIVO", "Modelo de granada cargado");
                     resolve(granada_modelo_base);
                 },
@@ -213,13 +212,14 @@ function lanzarGranada() {
     // Dirección de la cámara → velocidad inicial
     let dir = new THREE.Vector3();
     camera.getWorldDirection(dir);
+    dir.normalize();
 
     // Evita arrancar dentro del plano cercano de la cámara.
     granada_obj.position.addScaledVector(dir, 1.6);
     granada_obj.position.y += 0.2;
 
     vel.copy(dir).multiplyScalar(VEL_LANZAM);
-    vel.y += IMPULSO_Y;
+    if (IMPULSO_Y !== 0) vel.y += IMPULSO_Y;
 
     // Velocidad angular inicial (gira en el sentido del lanzamiento)
     vel_angular.set(

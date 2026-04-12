@@ -6,7 +6,6 @@
 var dificultad_calculada = 0;
 var cajas_cache = [];
 var zonas_navegables = [];
-var perfil_mapa_actual = null;
 const DIST_MIN_DIANA_TIRO = 30;
 
 const MATERIALES = {
@@ -29,17 +28,17 @@ function generarMapaAleatorio(semilla, opciones) {
     cajas_cache = [];
     zonas_navegables = [];
 
-    perfil_mapa_actual = construirPerfilAbierto(rand, opts.modo === "DAILY");
+    const perfilMapa = construirPerfilAbierto(rand, opts.modo === "DAILY");
 
     const raiz = new THREE.Group();
     scene.add(raiz);
 
-    aplicarTema(perfil_mapa_actual.tema);
+    aplicarTema(perfilMapa.tema);
 
     diana_obj = crearDiana(raiz);
 
-    const nodos = construirEscenarioAbierto(raiz, perfil_mapa_actual, rand);
-    poblarObstaculosAbiertos(raiz, perfil_mapa_actual, rand, nodos);
+    const nodos = construirEscenarioAbierto(raiz, perfilMapa, rand);
+    poblarObstaculosAbiertos(raiz, perfilMapa, rand, nodos);
 
     if (opts.modo === "DAILY") {
         const pDaily = obtenerPosicionDianaDaily(seedDaily);
@@ -55,18 +54,17 @@ function generarMapaAleatorio(semilla, opciones) {
     if (mejor) {
         p_tiro.copy(mejor.pos);
         dificultad_calculada = mejor.dificultad;
-        mostrarDificultad(dificultad_calculada, mejor.arcosViables, mejor.arcosTotales, perfil_mapa_actual.nombre);
+        mostrarDificultad(dificultad_calculada, mejor.arcosViables, mejor.arcosTotales, perfilMapa.nombre);
     } else {
         p_tiro.set(0, 6.6, 80);
         dificultad_calculada = 5;
-        mostrarDificultad(5, 0, 0, perfil_mapa_actual.nombre);
+        mostrarDificultad(5, 0, 0, perfilMapa.nombre);
     }
 
     camera.position.set(0, 150, 80);
     cameraControls.target.set(0, 0, 20);
     cameraControls.update();
 
-    console.log("Escenario abierto:", perfil_mapa_actual.nombre, "| nodos:", nodos.length);
 }
 
 function construirPerfilAbierto(rand, diario) {
@@ -243,9 +241,12 @@ function crearPlataformaZona(grupo, nodo, rand) {
 
 function crearConexionesAbiertas(grupo, nodos, rand) {
     // Conecta cada nodo con su vecino mas cercano usando pasarelas bajas, no paredes.
+    const conexionesCreadas = new Set();
+
     for (let i = 0; i < nodos.length; i++) {
         const a = nodos[i];
         let mejor = null;
+        let mejorIdx = -1;
         let mejorDist = Infinity;
 
         for (let j = 0; j < nodos.length; j++) {
@@ -255,10 +256,17 @@ function crearConexionesAbiertas(grupo, nodos, rand) {
             if (d < mejorDist) {
                 mejorDist = d;
                 mejor = b;
+                mejorIdx = j;
             }
         }
 
         if (!mejor || mejorDist < 16 || mejorDist > 160) continue;
+
+        const edgeA = Math.min(i, mejorIdx);
+        const edgeB = Math.max(i, mejorIdx);
+        const claveConexion = `${edgeA}-${edgeB}`;
+        if (conexionesCreadas.has(claveConexion)) continue;
+        conexionesCreadas.add(claveConexion);
 
         const cx = (a.x + mejor.x) / 2;
         const cz = (a.z + mejor.z) / 2;
@@ -554,8 +562,8 @@ function contarArcosViables(origen, target) {
     const dir = target.clone().sub(origen).normalize();
     const yawBase = Math.atan2(-dir.x, -dir.z);
 
-    const VEL = 1.6;
-    const YALZ = 0.72;
+    const VEL = (typeof VEL_LANZAM === "number") ? VEL_LANZAM : 1.45;
+    const YALZ = (typeof IMPULSO_Y === "number") ? IMPULSO_Y : 0.0;
 
     let viables = 0;
     let total = 0;

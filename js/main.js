@@ -11,6 +11,7 @@ var p_tiro        = new THREE.Vector3(0, 6.6, 80);
 
 // Estadisticas de sesion
 var stats = crearStatsBase();
+var fpsStats = null;
 
 // Estado de partida
 var modoJuego = null; // CAMPANA | DAILY
@@ -19,9 +20,10 @@ var objetivoActual = null;
 var avancePendiente = null;
 var dailySeed = 0;
 var dailyKey = "";
-var mapSeedActual = 0;
 var nombreJugador = "";
-var dailyProgresoActual = null;
+var partidaPausada = null;
+var solicitudCambioNivel = null;
+var vistaAntesCenital = null;
 
 const TOTAL_NIVELES_CAMPANA = 5;
 const DAILY_INTENTOS_MAX = 3;
@@ -33,6 +35,7 @@ function crearStatsBase() {
         mejorRebotes: Infinity,
         puntos: 0,
         maxNivel: 0,
+        mejorPuntajeSesion: 0,
         maxPorNivel: {},
     };
 }
@@ -244,13 +247,20 @@ function init() {
     document.addEventListener('pointerlockchange', onPointerLockChange);
 
     document.getElementById('btn-lanzar').addEventListener('click', intentarLanzamiento);
-    document.getElementById('btn-nuevo-mapa').addEventListener('click', nuevaRonda);
+    document.getElementById('btn-nuevo-mapa').addEventListener('click', () => {
+        if (modoJuego === "DAILY") return;
+        nuevaRonda();
+    });
     document.getElementById('aim-overlay').addEventListener('click', () => {
         if (estadoJuego === "APUNTANDO" && !apuntandoFPS) entrarModoApuntado();
     });
 
     document.getElementById('btn-campana').addEventListener('click', iniciarCampana);
     document.getElementById('btn-daily').addEventListener('click', iniciarDaily);
+    document.getElementById('btn-nivel-si').addEventListener('click', () => resolverCambioNivel(true));
+    document.getElementById('btn-nivel-no').addEventListener('click', () => resolverCambioNivel(false));
+
+    inicializarFpsMeter();
 
     const inputNombre = document.getElementById('input-player-name');
     const guardado = (localStorage.getItem('lineup_player_name') || '').trim();
@@ -272,13 +282,16 @@ function init() {
 function iniciarCampana() {
     if (!asegurarNombreJugador()) return;
 
+    partidaPausada = null;
+    solicitudCambioNivel = null;
+    ocultarModalCambioNivel();
     modoJuego = "CAMPANA";
     stats = crearStatsBase();
     stats.ronda = 1;
     avancePendiente = null;
     objetivoActual = OBJETIVOS_CAMPANA[0];
     actualizarMaxNivelActual();
-    setTextoMenu("Campana iniciada. Supera 5 niveles incrementales.");
+    setTextoMenu("Modo Libre iniciado. Supera 5 niveles incrementales.");
     ocultarMenu();
     nuevaRonda();
 }
@@ -288,17 +301,18 @@ function iniciarDaily() {
 
     sincronizarClaveDailyHoy();
 
-    dailyProgresoActual = leerProgresoDaily();
-    if (dailyProgresoActual.bloqueado || dailyProgresoActual.intentosUsados >= DAILY_INTENTOS_MAX) {
+    const progresoDaily = leerProgresoDaily();
+    if (progresoDaily.bloqueado || progresoDaily.intentosUsados >= DAILY_INTENTOS_MAX) {
         setTextoMenu(`Daily ${dailyKey} ya completado (${DAILY_INTENTOS_MAX}/${DAILY_INTENTOS_MAX} intentos usados). Vuelve manana.`);
         actualizarRankingMenuDaily();
         return;
     }
 
+    partidaPausada = null;
     modoJuego = "DAILY";
     stats = crearStatsBase();
     stats.ronda = 1;
-    stats.lanzamientos = dailyProgresoActual.intentosUsados;
+    stats.lanzamientos = progresoDaily.intentosUsados;
     avancePendiente = null;
 
     objetivoActual = OBJETIVOS_DAILY[dailySeed % OBJETIVOS_DAILY.length];
@@ -326,6 +340,7 @@ function puedeLanzarEnModoActual() {
 
 function intentarLanzamiento() {
     if (estadoJuego !== "APUNTANDO" || !apuntandoFPS) return;
+    if (solicitudCambioNivel) return;
     if (!puedeLanzarEnModoActual()) return;
     lanzarGranada();
 }
@@ -335,8 +350,11 @@ function ocultarMenu() {
     mostrarHUDJuego(true);
 }
 
-function mostrarMenu(mensaje) {
+function mostrarMenu(mensaje, conservarPausa) {
     estadoJuego = "MENU";
+    if (!conservarPausa) partidaPausada = null;
+    if (!conservarPausa) solicitudCambioNivel = null;
+    ocultarModalCambioNivel();
     modoJuego = null;
     mostrarHUDJuego(false);
     setOverlay(false);
@@ -359,6 +377,97 @@ function mostrarHUDJuego(visible) {
     document.getElementById('stats-panel').style.display = val;
     document.getElementById('controles-panel').style.display = val;
     document.getElementById('objetivo-panel').style.display = visible ? 'block' : 'none';
+    if (visible) actualizarHUDModo();
+}
+
+function actualizarHUDModo() {
+    const isDaily = modoJuego === "DAILY";
+
+    const rowRonda = document.getElementById('stat-row-ronda');
+    const rowBestNivel = document.getElementById('stat-row-best-nivel');
+    if (rowRonda) rowRonda.style.display = isDaily ? 'none' : 'flex';
+    if (rowBestNivel) rowBestNivel.style.display = isDaily ? 'none' : 'flex';
+
+    const panelControles = document.getElementById('controles-panel');
+    if (!panelControles) return;
+
+    if (isDaily) {
+        panelControles.innerHTML = [
+            '<div class="ctrl-hint"><kbd>ESPACIO</kbd> Lanzar</div>',
+            '<div class="ctrl-hint"><kbd>V</kbd> Vista cenital</div>',
+            '<div class="ctrl-hint"><kbd>ESC</kbd> Menu / reanudar</div>'
+        ].join('');
+        return;
+    }
+
+    panelControles.innerHTML = [
+        '<div class="ctrl-hint"><kbd>ESPACIO</kbd> Lanzar</div>',
+        '<div class="ctrl-hint"><kbd>R</kbd> Nuevo mapa</div>',
+        '<div class="ctrl-hint"><kbd>V</kbd> Vista cenital</div>',
+        '<div class="ctrl-hint"><kbd>ESC</kbd> Soltar raton / menu</div>'
+    ].join('');
+}
+
+function textoApuntadoHUD() {
+    if (modoJuego === "DAILY") {
+        return "V = Vista cenital | Esc = Menu principal";
+    }
+    return "R = Reiniciar ronda | V = Vista cenital | Esc = Menu principal";
+}
+
+function textoEnPosicionHUD() {
+    if (modoJuego === "DAILY") {
+        return "Espacio = Lanzar | Esc = Soltar raton / Menu";
+    }
+    return "Espacio = Lanzar | Esc = Soltar raton | R = Reiniciar";
+}
+
+function pausarPartidaEnMenu() {
+    if (!modoJuego) return;
+    partidaPausada = {
+        modoJuego,
+        estadoAnterior: estadoJuego,
+    };
+    mostrarMenu("Partida en pausa. Pulsa Esc para reanudar.", true);
+}
+
+function reanudarPartidaPausada() {
+    if (!partidaPausada || !partidaPausada.modoJuego) return;
+
+    modoJuego = partidaPausada.modoJuego;
+    const estadoPrevio = partidaPausada.estadoAnterior;
+    partidaPausada = null;
+
+    ocultarMenu();
+    actualizarHUD();
+    actualizarObjetivoUI();
+
+    if (estadoPrevio === "VOLANDO" || estadoPrevio === "DETONANDO") {
+        estadoJuego = estadoPrevio;
+        mostrarBoton('btn-lanzar', false);
+        mostrarBoton('btn-nuevo-mapa', false);
+        setOverlay(false);
+        mostrarCrosshair(false);
+        setUI("PARTIDA REANUDADA", "Continuando lanzamiento...");
+        return;
+    }
+
+    estadoJuego = "APUNTANDO";
+    cameraControls.enabled = false;
+    enVistaCenital = false;
+
+    if (apuntandoFPS) {
+        setOverlay(false);
+        mostrarCrosshair(true);
+        setUI("EN POSICION", textoEnPosicionHUD());
+    } else {
+        setOverlay(true);
+        mostrarCrosshair(false);
+        setUI("PULSA ESPACIO PARA APUNTAR", textoApuntadoHUD());
+    }
+
+    mostrarBoton('btn-lanzar', puedeLanzarEnModoActual());
+    mostrarBoton('btn-nuevo-mapa', modoJuego !== "DAILY");
 }
 
 // ==========================================
@@ -369,13 +478,12 @@ function loadScene() {
 
     if (typeof generarMapaAleatorio === "function") {
         if (modoJuego === "DAILY") {
-            mapSeedActual = dailySeed;
             stats.ronda = 1;
-            generarMapaAleatorio(mapSeedActual, { modo: "DAILY", dianaSeed: dailySeed });
+            generarMapaAleatorio(dailySeed, { modo: "DAILY", dianaSeed: dailySeed });
         } else {
-            mapSeedActual = Math.random() * 9999;
+            const seedCampana = Math.random() * 9999;
             stats.ronda = OBJETIVOS_CAMPANA.indexOf(objetivoActual) + 1;
-            generarMapaAleatorio(mapSeedActual, { modo: "CAMPANA" });
+            generarMapaAleatorio(seedCampana, { modo: "CAMPANA" });
         }
 
         actualizarHUD();
@@ -411,6 +519,7 @@ function crearSuelo() {
 // ==========================================
 function render() {
     requestAnimationFrame(render);
+    if (fpsStats) fpsStats.begin();
     TWEEN.update();
 
     if (cameraControls.enabled) cameraControls.update();
@@ -431,6 +540,30 @@ function render() {
     }
 
     renderer.render(scene, camera);
+    if (fpsStats) fpsStats.end();
+}
+
+function inicializarFpsMeter() {
+    const host = document.getElementById('fps-meter');
+    if (!host || typeof Stats !== 'function') return;
+
+    fpsStats = new Stats();
+    fpsStats.showPanel(0);
+
+    const dom = fpsStats.dom || fpsStats.domElement;
+    if (!dom) {
+        fpsStats = null;
+        return;
+    }
+
+    dom.style.position = 'static';
+    dom.style.left = 'auto';
+    dom.style.top = 'auto';
+    dom.style.opacity = '1';
+    dom.style.cursor = 'default';
+
+    host.innerHTML = '';
+    host.appendChild(dom);
 }
 
 // ==========================================
@@ -501,8 +634,8 @@ function iniciarFaseApuntado() {
     cameraControls.enabled = false;
     estadoJuego = "APUNTANDO";
     mostrarBoton('btn-lanzar', puedeLanzarEnModoActual());
-    mostrarBoton('btn-nuevo-mapa', true);
-    setUI("PULSA ESPACIO PARA APUNTAR", "R = Reiniciar ronda | V = Vista cenital");
+    mostrarBoton('btn-nuevo-mapa', modoJuego !== "DAILY");
+    setUI("PULSA ESPACIO PARA APUNTAR", textoApuntadoHUD());
     mostrarCrosshair(false);
     setOverlay(true);
 }
@@ -517,17 +650,23 @@ function entrarModoApuntado() {
 function onPointerLockChange() {
     apuntandoFPS = (document.pointerLockElement === renderer.domElement);
 
+    if (enVistaCenital) {
+        setOverlay(false);
+        mostrarCrosshair(false);
+        return;
+    }
+
     if (apuntandoFPS) {
         yaw   = camera.rotation.y;
         pitch = camera.rotation.x;
         setOverlay(false);
         mostrarCrosshair(true);
-        setUI("EN POSICION", "Espacio = Lanzar | Esc = Soltar raton | R = Reiniciar");
+        setUI("EN POSICION", textoEnPosicionHUD());
     } else {
         mostrarCrosshair(false);
         if (estadoJuego === "APUNTANDO") {
             setOverlay(true);
-            setUI("PULSA ESPACIO PARA APUNTAR", "R = Reiniciar ronda | V = Vista cenital");
+            setUI("PULSA ESPACIO PARA APUNTAR", textoApuntadoHUD());
         }
     }
 }
@@ -554,6 +693,14 @@ function onKeyDown(e) {
 
         case 'KeyR':
             if (estadoJuego === "APUNTANDO" || estadoJuego === "DETONANDO") {
+                if (solicitudCambioNivel) {
+                    setUI("CONFIRMA CAMBIO DE NIVEL", "Elige Si o No en la ventana de confirmacion");
+                    return;
+                }
+                if (modoJuego === "DAILY") {
+                    setUI("DAILY FIJO", "En daily no se puede cambiar el mapa");
+                    return;
+                }
                 salirPointerLock();
                 nuevaRonda();
             }
@@ -564,9 +711,25 @@ function onKeyDown(e) {
             break;
 
         case 'Escape':
-            if (estadoJuego !== "MENU") {
+            if (estadoJuego === "MENU") {
+                if (partidaPausada) reanudarPartidaPausada();
+                break;
+            }
+
+            if (solicitudCambioNivel) {
+                setUI("CONFIRMA CAMBIO DE NIVEL", "Elige Si o No en la ventana de confirmacion");
+                break;
+            }
+
+            if (estadoJuego === "APUNTANDO" && apuntandoFPS) {
                 salirPointerLock();
-                mostrarMenu("Sesion en pausa. Elige un modo para continuar");
+                setUI("APUNTADO EN PAUSA", textoApuntadoHUD());
+                break;
+            }
+
+            if (modoJuego) {
+                salirPointerLock();
+                pausarPartidaEnMenu();
             }
             break;
     }
@@ -581,13 +744,14 @@ function procesarResultadoLanzamiento(data) {
     const evalObj = objetivoActual.evaluar(data);
     const score = calcularPuntuacion(data, evalObj, objetivoActual);
     stats.puntos += score.total;
+    if (score.total > stats.mejorPuntajeSesion) stats.mejorPuntajeSesion = score.total;
     actualizarMaxPuntajeNivel(score.total);
     actualizarHUD();
     actualizarObjetivoUI();
     mostrarResultado(score, evalObj, data);
 
     if (modoJuego === "DAILY") {
-        guardarEnRankingDaily(score.total, evalObj.ok);
+        guardarEnRankingDaily(score.total, score.estrellas, evalObj.ok);
 
         if (intentosDailyRestantes() <= 0) {
             mostrarBoton('btn-lanzar', false);
@@ -595,14 +759,11 @@ function procesarResultadoLanzamiento(data) {
         }
     }
 
-    if (modoJuego === "CAMPANA" && evalObj.ok) {
-        const idx = OBJETIVOS_CAMPANA.indexOf(objetivoActual);
-        if (idx < TOTAL_NIVELES_CAMPANA - 1) {
-            avancePendiente = "SIGUIENTE_NIVEL";
-            setUI("OBJETIVO CUMPLIDO", "Preparando siguiente nivel...");
-        } else {
-            avancePendiente = "FIN_CAMPANA";
-            setUI("CAMPANA COMPLETADA", "Volveras al menu principal");
+    if (modoJuego === "CAMPANA") {
+        if (score.impactoDiana.acierto) {
+            prepararCambioNivelPorAcierto(score.estrellas);
+        } else if (evalObj.ok) {
+            setUI("OBJETIVO CUMPLIDO", "Acierta la diana para cambiar de nivel");
         }
     }
 }
@@ -610,54 +771,42 @@ function procesarResultadoLanzamiento(data) {
 function calcularPuntuacion(data, evalObj, obj) {
     const precisionNorm = clamp01(evalObj.precision);
     const rebotesNorm = clamp01(evalObj.reboteScore);
-    const baseObjetivo = evalObj.ok ? 780 : 140;
-    const precision = Math.round(Math.pow(precisionNorm, 1.1) * 560);
-    const rebotes = Math.round(rebotesNorm * 320);
-    const tiempo = Math.round(clamp01(1 - data.vueloMs / 8500) * 220);
-    const dificultad = Math.round((typeof dificultad_calculada === "number" ? dificultad_calculada : 5) * 52);
+    const impactoDiana = evaluarImpactoDiana(data.posicion);
 
-    const distDiana = data.posicion.distanceTo(obtenerPosicionDiana());
-    const bonusCentro = distDiana <= 3.2 ? 200 : (distDiana <= 6 ? 110 : 0);
-    const bonusPerfecto = (evalObj.ok && precisionNorm >= 0.9 && data.rebotes >= 1) ? 140 : 0;
-    const bonusRitmo = (evalObj.ok && data.vueloMs >= 1200 && data.vueloMs <= 5200) ? 70 : 0;
+    const baseObjetivo = evalObj.ok ? 650 : 180;
+    const precision = Math.round(Math.pow(precisionNorm, 1.15) * 420);
+    const precisionDiana = Math.round(Math.pow(impactoDiana.precision, 1.08) * 520);
+    const rebotes = Math.round(Math.pow(rebotesNorm, 1.08) * 260);
+    const tiempo = Math.round(clamp01(1 - data.vueloMs / 9000) * 170);
+    const dificultad = Math.round((typeof dificultad_calculada === "number" ? dificultad_calculada : 5) * 48);
 
-    let total = baseObjetivo + precision + rebotes + tiempo + dificultad + bonusCentro + bonusPerfecto + bonusRitmo;
-    if (!evalObj.ok) total = Math.round(total * 0.52);
+    const bonusZonaDiana = impactoDiana.zona === "BULLSEYE" ? 260 : (impactoDiana.zona === "CENTRO" ? 160 : (impactoDiana.zona === "BORDE" ? 90 : 0));
+    const bonusCombo = (evalObj.ok && impactoDiana.acierto) ? 170 : 0;
+    const bonusControl = (data.vueloMs >= 1100 && data.vueloMs <= 5200) ? 60 : 0;
 
-    const estrellas = calcularEstrellas(total, obj.estrellas, evalObj.ok, data.posicion);
+    let total = baseObjetivo + precision + precisionDiana + rebotes + tiempo + dificultad + bonusZonaDiana + bonusCombo + bonusControl;
+    if (!impactoDiana.acierto) {
+        // Si cae fuera de la diana, el score no debe competir con impactos reales.
+        total = Math.round(total * (evalObj.ok ? 0.45 : 0.30));
+    }
+
+    const estrellas = calcularEstrellas(total, obj.estrellas, evalObj.ok, data.posicion, impactoDiana);
     return {
         total,
         estrellas,
-        desglose: { baseObjetivo, precision, rebotes, tiempo, dificultad, bonusCentro, bonusPerfecto, bonusRitmo },
+        impactoDiana,
+        desglose: { baseObjetivo, precision, precisionDiana, rebotes, tiempo, dificultad, bonusZonaDiana, bonusCombo, bonusControl },
     };
 }
 
-function calcularEstrellas(total, umbrales, objetivoCumplido, posicionDetonacion) {
-    // Prioridad: sistema de estrellas por distancia real a la diana.
-    // Diana centrada en (0, 0), radio visual ~5 en plano XZ.
-    if (posicionDetonacion) {
-        const pDiana = obtenerPosicionDiana();
-        const distDiana = Math.hypot(posicionDetonacion.x - pDiana.x, posicionDetonacion.z - pDiana.z);
+function calcularEstrellas(total, umbrales, objetivoCumplido, posicionDetonacion, impactoDiana) {
+    const impacto = impactoDiana || (posicionDetonacion ? evaluarImpactoDiana(posicionDetonacion) : null);
+    if (!impacto || !impacto.acierto) return 0;
 
-        // 3*: centro o muy cerca del centro.
-        if (distDiana <= 4.8) return 3;
-        // 2*: toca borde o cae justo alrededor de la diana.
-        if (distDiana <= 6.2) return 2;
-        // 1*: cae cerca de la diana.
-        if (distDiana <= 11.0) return 1;
-    }
-
-    let s = 0;
-    if (total >= umbrales[0]) s++;
-    if (total >= umbrales[1]) s++;
-    if (total >= umbrales[2]) s++;
-
-    // Si cumples el objetivo de la ronda, evita resultados demasiado frustrantes.
-    if (objetivoCumplido && total >= umbrales[0]) {
-        s = Math.max(2, s);
-    }
-
-    return s;
+    // Regla solicitada: 1* borde, 2* centro, 3* bullseye o muy cerca del centro.
+    if (impacto.zona === "BULLSEYE") return 3;
+    if (impacto.zona === "CENTRO") return 2;
+    return 1;
 }
 
 function mostrarResultado(score, evalObj, data) {
@@ -670,8 +819,116 @@ function mostrarResultado(score, evalObj, data) {
 
     document.getElementById('res-puntaje').innerText = `${score.total} pts`;
     document.getElementById('res-estrellas').innerText = "★".repeat(score.estrellas) + "☆".repeat(3 - score.estrellas);
+    const zona = score.impactoDiana ? score.impactoDiana.zona : "FUERA";
     document.getElementById('res-detalle').innerText =
-        `${evalObj.detalle} | Dist:${distDiana}m | B:${score.desglose.baseObjetivo} P:${score.desglose.precision} R:${score.desglose.rebotes} T:${score.desglose.tiempo} X:${score.desglose.bonusCentro + score.desglose.bonusPerfecto + score.desglose.bonusRitmo}`;
+        `${evalObj.detalle} | Dist:${distDiana}m (${zona}) | B:${score.desglose.baseObjetivo} P:${score.desglose.precision} D:${score.desglose.precisionDiana} R:${score.desglose.rebotes} T:${score.desglose.tiempo} X:${score.desglose.bonusZonaDiana + score.desglose.bonusCombo + score.desglose.bonusControl}`;
+}
+
+function prepararCambioNivelPorAcierto(estrellas) {
+    const idx = OBJETIVOS_CAMPANA.indexOf(objetivoActual);
+    const haySiguiente = idx >= 0 && idx < TOTAL_NIVELES_CAMPANA - 1;
+
+    solicitudCambioNivel = { idx, haySiguiente, estrellas: Math.max(1, estrellas || 1) };
+    mostrarModalCambioNivel(estrellas, haySiguiente);
+    setUI("DIANA ACERTADA", haySiguiente ? "Elige si quieres cambiar de nivel" : "Elige si quieres finalizar Modo Libre");
+}
+
+function mostrarModalCambioNivel(estrellas, haySiguiente) {
+    // Libera el cursor para poder interactuar con el modal aunque vengamos de apuntado FPS.
+    salirPointerLock();
+    setOverlay(false);
+    mostrarCrosshair(false);
+
+    const modal = document.getElementById('nivel-up-modal');
+    const stars = document.getElementById('nivel-stars-big');
+    const sub = document.getElementById('nivel-up-sub');
+
+    if (stars) stars.innerText = "★".repeat(Math.max(1, estrellas || 1));
+    if (sub) sub.innerText = haySiguiente ? "¿Cambiar de nivel?" : "¿Finalizar Modo Libre?";
+    if (modal) modal.style.display = 'flex';
+    generarConfettiCambioNivel();
+}
+
+function ocultarModalCambioNivel() {
+    const modal = document.getElementById('nivel-up-modal');
+    const layer = document.getElementById('nivel-confetti-layer');
+    if (layer) layer.innerHTML = '';
+    if (modal) modal.style.display = 'none';
+}
+
+function generarConfettiCambioNivel() {
+    const layer = document.getElementById('nivel-confetti-layer');
+    if (!layer) return;
+
+    layer.innerHTML = '';
+    const colores = ['#ffd54f', '#73d0ff', '#f87979', '#8de39f', '#d4a3ff', '#ffb36b'];
+
+    for (let i = 0; i < 42; i++) {
+        const p = document.createElement('span');
+        p.className = 'confetti-piece';
+        p.style.left = `${Math.random() * 100}%`;
+        p.style.background = colores[Math.floor(Math.random() * colores.length)];
+        p.style.animationDelay = `${Math.random() * 0.28}s`;
+        p.style.setProperty('--drift', `${(Math.random() - 0.5) * 180}px`);
+        p.style.setProperty('--rot-end', `${Math.random() * 720 + 360}deg`);
+        layer.appendChild(p);
+    }
+}
+
+function resolverCambioNivel(cambiar) {
+    if (!solicitudCambioNivel) return;
+
+    const info = solicitudCambioNivel;
+    solicitudCambioNivel = null;
+    ocultarModalCambioNivel();
+
+    if (!cambiar) {
+        avancePendiente = null;
+        if (estadoJuego === "APUNTANDO") {
+            if (apuntandoFPS) {
+                setOverlay(false);
+                mostrarCrosshair(true);
+            } else {
+                setOverlay(true);
+                mostrarCrosshair(false);
+            }
+            mostrarBoton('btn-lanzar', true);
+            mostrarBoton('btn-nuevo-mapa', modoJuego !== "DAILY");
+            setUI("CONTINUAS EN EL NIVEL", apuntandoFPS ? textoEnPosicionHUD() : textoApuntadoHUD());
+        } else {
+            setUI("CONTINUAS EN EL NIVEL", "Pulsa espacio para intentar otra vez");
+        }
+        return;
+    }
+
+    avancePendiente = info.haySiguiente ? "SIGUIENTE_NIVEL" : "FIN_CAMPANA";
+    setUI("CAMBIANDO NIVEL", info.haySiguiente ? "Generando nuevo mapa..." : "Finalizando Modo Libre...");
+
+    // No esperes a que termine la animacion de humo: avanza de nivel al instante.
+    if (estadoJuego === "DETONANDO" || estadoJuego === "VOLVIENDO" || estadoJuego === "APUNTANDO") {
+        ejecutarAvancePendiente();
+    }
+}
+
+function ejecutarAvancePendiente() {
+    if (avancePendiente === "SIGUIENTE_NIVEL") {
+        const idx = OBJETIVOS_CAMPANA.indexOf(objetivoActual);
+        objetivoActual = OBJETIVOS_CAMPANA[idx + 1];
+        actualizarMaxNivelActual();
+        avancePendiente = null;
+        nuevaRonda();
+        return true;
+    }
+
+    if (avancePendiente === "FIN_CAMPANA") {
+        avancePendiente = null;
+        setTimeout(() => {
+            mostrarMenu(`Modo Libre completado. Puntaje final: ${stats.puntos}`);
+        }, 400);
+        return true;
+    }
+
+    return false;
 }
 
 function claveNivelActual() {
@@ -699,10 +956,18 @@ function actualizarMaxPuntajeNivel(puntajeLanzamiento) {
 
 function actualizarObjetivoUI() {
     document.getElementById('obj-nombre').innerText = objetivoActual ? objetivoActual.nombre : '-';
-    const extraDaily = modoJuego === "DAILY"
-        ? ` | Intentos restantes: ${intentosDailyRestantes()}/${DAILY_INTENTOS_MAX}`
-        : "";
-    document.getElementById('obj-regla').innerText = (objetivoActual ? objetivoActual.regla : '-') + extraDaily;
+    if (modoJuego === "DAILY" && objetivoActual) {
+        const posDiana = obtenerPosicionDiana();
+        const distOrigen = p_tiro.distanceTo(posDiana);
+        document.getElementById('obj-regla').innerText = [
+            objetivoActual.regla,
+            `Posicion diana: X ${posDiana.x.toFixed(1)} | Z ${posDiana.z.toFixed(1)}`,
+            `Dist. origen -> diana: ${distOrigen.toFixed(1)}m`,
+            `Intentos restantes: ${intentosDailyRestantes()}/${DAILY_INTENTOS_MAX}`
+        ].join('\n');
+    } else {
+        document.getElementById('obj-regla').innerText = objetivoActual ? objetivoActual.regla : '-';
+    }
     document.getElementById('resultado-panel').style.display = 'none';
 }
 
@@ -785,7 +1050,6 @@ function guardarProgresoDaily() {
         actualizado: new Date().toISOString(),
     };
     localStorage.setItem(progresoDailyKey(), JSON.stringify(payload));
-    dailyProgresoActual = payload;
 }
 
 function leerRankingDaily() {
@@ -799,13 +1063,14 @@ function leerRankingDaily() {
     }
 }
 
-function guardarEnRankingDaily(puntaje, objetivoCumplido) {
+function guardarEnRankingDaily(puntaje, estrellas, objetivoCumplido) {
     sincronizarClaveDailyHoy();
 
     const arr = leerRankingDaily();
     arr.push({
         name: nombreJugador || "ANON",
         score: puntaje,
+        stars: Math.max(0, Math.min(3, Number(estrellas) || 0)),
         ok: !!objetivoCumplido,
         launches: stats.lanzamientos,
         at: new Date().toLocaleTimeString(),
@@ -842,7 +1107,8 @@ function actualizarRankingMenuDaily() {
     let html = `<div class="rank-title">RANKING DAILY ${keyFecha}</div>`;
     for (let i = 0; i < arr.length; i++) {
         const e = arr[i];
-        const tag = e.ok ? "OK" : "FAIL";
+        const starsN = Math.max(0, Math.min(3, Number(e.stars) || 0));
+        const tag = "★".repeat(starsN) + "☆".repeat(3 - starsN);
         const nombre = sanitizarNombre(e.name || 'ANON');
         html += `<div class="rank-row"><span>#${i + 1} <span class="rank-player">${nombre}</span> ${tag} ${e.at}</span><span>${e.score}</span></div>`;
     }
@@ -864,38 +1130,34 @@ function volverAPosicionTiro() {
             camera.quaternion.setFromRotationMatrix(m);
         })
         .onComplete(() => {
-            if (avancePendiente === "SIGUIENTE_NIVEL") {
-                const idx = OBJETIVOS_CAMPANA.indexOf(objetivoActual);
-                objetivoActual = OBJETIVOS_CAMPANA[idx + 1];
-                actualizarMaxNivelActual();
-                avancePendiente = null;
-                nuevaRonda();
-                return;
-            }
-
-            if (avancePendiente === "FIN_CAMPANA") {
-                avancePendiente = null;
-                setTimeout(() => {
-                    mostrarMenu(`Campana completada. Puntaje final: ${stats.puntos}`);
-                }, 700);
-                return;
-            }
+            if (ejecutarAvancePendiente()) return;
 
             estadoJuego = "APUNTANDO";
             camera.rotation.order = 'YXZ';
             yaw   = camera.rotation.y;
             pitch = camera.rotation.x;
 
+            if (solicitudCambioNivel) {
+                setOverlay(false);
+                mostrarCrosshair(false);
+                const txt = solicitudCambioNivel.haySiguiente ? "Elige si quieres cambiar de nivel" : "Elige si quieres finalizar Modo Libre";
+                setUI("DIANA ACERTADA", txt);
+                mostrarBoton('btn-lanzar', false);
+                mostrarBoton('btn-nuevo-mapa', false);
+                mostrarModalCambioNivel(solicitudCambioNivel.estrellas || 1, solicitudCambioNivel.haySiguiente);
+                return;
+            }
+
             if (apuntandoFPS) {
                 setOverlay(false);
                 mostrarCrosshair(true);
-                setUI("EN POSICION", "Espacio = Lanzar | Esc = Soltar raton | R = Reiniciar");
+                setUI("EN POSICION", textoEnPosicionHUD());
             } else {
                 setOverlay(true);
-                setUI("PULSA ESPACIO PARA APUNTAR", "R = Reiniciar ronda | V = Vista cenital");
+                setUI("PULSA ESPACIO PARA APUNTAR", textoApuntadoHUD());
             }
             mostrarBoton('btn-lanzar', true);
-            mostrarBoton('btn-nuevo-mapa', true);
+            mostrarBoton('btn-nuevo-mapa', modoJuego !== "DAILY");
         })
         .start();
 }
@@ -904,6 +1166,12 @@ function volverAPosicionTiro() {
 // NUEVA RONDA
 // ==========================================
 function nuevaRonda() {
+    solicitudCambioNivel = null;
+    ocultarModalCambioNivel();
+
+    // Al generar un mapa nuevo, la mejor puntuacion de nivel debe reiniciarse.
+    stats.maxNivel = 0;
+
     if (!modoJuego) {
         mostrarMenu();
         return;
@@ -942,8 +1210,15 @@ function nuevaRonda() {
 // ==========================================
 function toggleVistaCenital() {
     if (!enVistaCenital) {
-        salirPointerLock();
+        camera.rotation.order = 'YXZ';
+        vistaAntesCenital = {
+            estabaApuntandoFPS: !!apuntandoFPS,
+            yaw: apuntandoFPS ? yaw : camera.rotation.y,
+            pitch: Math.max(PITCH_MIN, Math.min(PITCH_MAX, apuntandoFPS ? pitch : camera.rotation.x)),
+        };
+
         enVistaCenital = true;
+        salirPointerLock();
         cameraControls.enabled = true;
         cameraControls.maxDistance = 220;
         cameraControls.target.set(0, 0, 10);
@@ -964,10 +1239,31 @@ function toggleVistaCenital() {
             .easing(TWEEN.Easing.Cubic.InOut)
             .onComplete(() => {
                 camera.rotation.order = 'YXZ';
-                yaw   = camera.rotation.y;
-                pitch = camera.rotation.x;
-                setOverlay(true);
-                setUI("PULSA ESPACIO PARA APUNTAR", "R = Reiniciar ronda | V = Vista cenital");
+                const volverEnModoApuntado = !!(vistaAntesCenital && vistaAntesCenital.estabaApuntandoFPS);
+                if (vistaAntesCenital) {
+                    yaw = vistaAntesCenital.yaw;
+                    pitch = vistaAntesCenital.pitch;
+                } else {
+                    yaw = camera.rotation.y;
+                    pitch = Math.max(PITCH_MIN, Math.min(PITCH_MAX, camera.rotation.x));
+                }
+                vistaAntesCenital = null;
+                camera.rotation.y = yaw;
+                camera.rotation.x = pitch;
+                camera.rotation.z = 0;
+
+                if (volverEnModoApuntado) {
+                    // Si antes de cenital estabas moviendo camara, vuelve directo a ese modo.
+                    apuntandoFPS = true;
+                    setOverlay(false);
+                    mostrarCrosshair(true);
+                    setUI("EN POSICION", textoEnPosicionHUD());
+                } else {
+                    apuntandoFPS = false;
+                    setOverlay(true);
+                    mostrarCrosshair(false);
+                    setUI("PULSA ESPACIO PARA APUNTAR", textoApuntadoHUD());
+                }
             })
             .start();
     }
@@ -1015,6 +1311,40 @@ function scoreRebotesSinLimite(rebotes, ideal, factorPenalizacion) {
     return clamp01(1 / (1 + diff * f));
 }
 
+function evaluarImpactoDiana(posicionDetonacion) {
+    const diana = obtenerPosicionDiana();
+    const dist = Math.hypot(posicionDetonacion.x - diana.x, posicionDetonacion.z - diana.z);
+
+    const RADIO_BULLSEYE = 1.2;
+    const RADIO_CENTRO = 3.0;
+    const RADIO_BORDE = 5.8;
+
+    let zona = "FUERA";
+    let precision = 0;
+
+    if (dist <= RADIO_BULLSEYE) {
+        zona = "BULLSEYE";
+        precision = 1;
+    } else if (dist <= RADIO_CENTRO) {
+        zona = "CENTRO";
+        const t = (dist - RADIO_BULLSEYE) / (RADIO_CENTRO - RADIO_BULLSEYE);
+        precision = 0.92 - t * 0.22;
+    } else if (dist <= RADIO_BORDE) {
+        zona = "BORDE";
+        const t = (dist - RADIO_CENTRO) / (RADIO_BORDE - RADIO_CENTRO);
+        precision = 0.65 - t * 0.35;
+    } else {
+        precision = clamp01(1 - (dist - RADIO_BORDE) / 20) * 0.25;
+    }
+
+    return {
+        dist,
+        zona,
+        acierto: dist <= RADIO_BORDE,
+        precision: clamp01(precision),
+    };
+}
+
 function salirPointerLock() {
     if (document.pointerLockElement) document.exitPointerLock();
     apuntandoFPS = false;
@@ -1041,9 +1371,8 @@ function setOverlay(visible) {
 function actualizarHUD() {
     document.getElementById('stat-ronda').innerText  = stats.ronda;
     document.getElementById('stat-lanzam').innerText = stats.lanzamientos;
-    document.getElementById('stat-mejor').innerText  = stats.mejorRebotes === Infinity ? '-' : stats.mejorRebotes;
-    document.getElementById('stat-puntos').innerText = stats.puntos;
-    document.getElementById('stat-max-nivel').innerText = stats.maxNivel || 0;
+    document.getElementById('stat-best-nivel').innerText = stats.maxNivel || 0;
+    document.getElementById('stat-best-total').innerText = stats.mejorPuntajeSesion || 0;
 }
 
 function registrarLanzamiento(rebotes) {

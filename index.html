@@ -20,7 +20,7 @@
                 <input id="input-player-name" type="text" maxlength="18" placeholder="Tu nombre para el ranking" autocomplete="nickname">
             </div>
             <div class="menu-actions">
-                <button id="btn-campana">Campaña</button>
+                <button id="btn-campana">Modo Libre</button>
                 <button id="btn-daily">Daily LineUp</button>
             </div>
             <div id="menu-info">Elige un modo para empezar</div>
@@ -50,6 +50,9 @@
         </div>
     </div>
 
+    <!-- FPS (stats.js) -->
+    <div id="fps-meter" aria-hidden="true"></div>
+
     <!-- Objetivo actual -->
     <div id="objetivo-panel" style="display:none;">
         <div class="obj-title">OBJETIVO</div>
@@ -65,13 +68,26 @@
         <div id="res-detalle">-</div>
     </div>
 
+    <!-- Modal cambio de nivel (Modo Libre) -->
+    <div id="nivel-up-modal" style="display:none;">
+        <div class="nivel-up-card">
+            <div id="nivel-confetti-layer"></div>
+            <div id="nivel-stars-big">★★★</div>
+            <div id="nivel-up-title">DIANA ACERTADA</div>
+            <div id="nivel-up-sub">¿Cambiar de nivel?</div>
+            <div class="nivel-up-actions">
+                <button id="btn-nivel-si">Si</button>
+                <button id="btn-nivel-no">No</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Stats -->
     <div id="stats-panel">
-        <div class="stat-row"><span class="stat-label">RONDA</span><span class="stat-val" id="stat-ronda">—</span></div>
-        <div class="stat-row"><span class="stat-label">LANZAM.</span><span class="stat-val" id="stat-lanzam">0</span></div>
-        <div class="stat-row"><span class="stat-label">MEJOR</span><span class="stat-val" id="stat-mejor">—</span></div>
-        <div class="stat-row"><span class="stat-label">PUNTOS</span><span class="stat-val" id="stat-puntos">0</span></div>
-        <div class="stat-row"><span class="stat-label">MAX NIVEL</span><span class="stat-val" id="stat-max-nivel">0</span></div>
+        <div class="stat-row" id="stat-row-ronda"><span class="stat-label">RONDA</span><span class="stat-val" id="stat-ronda">—</span></div>
+        <div class="stat-row" id="stat-row-lanzam"><span class="stat-label">LANZAM.</span><span class="stat-val" id="stat-lanzam">0</span></div>
+        <div class="stat-row" id="stat-row-best-nivel"><span class="stat-label">MEJOR PUNT. NIVEL</span><span class="stat-val" id="stat-best-nivel">0</span></div>
+        <div class="stat-row" id="stat-row-best-total"><span class="stat-label">MEJOR PUNT. TOTAL</span><span class="stat-val" id="stat-best-total">0</span></div>
     </div>
 
     <!-- Atajos -->
@@ -92,6 +108,7 @@
     <script src="lib/OrbitControls.js"></script>
     <script src="lib/GLTFLoader.js"></script>
     <script src="lib/tween_18.js"></script>
+    <script src="lib/stats.min.js"></script>
     <script src="js/generador.js"></script>
     <script src="js/fisicas.js"></script>
     <script src="js/main.js"></script>

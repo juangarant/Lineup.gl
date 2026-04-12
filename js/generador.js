@@ -8,6 +8,48 @@ var cajas_cache = [];
 var zonas_navegables = [];
 const DIST_MIN_DIANA_TIRO = 30;
 
+const CONFIG_DIFICULTAD = {
+    DAILY_RATIO_OBJETIVO: 0.24,
+    CAMPANA_RATIO_OBJETIVO: [0.38, 0.31, 0.24, 0.18, 0.13],
+};
+
+const BUSQUEDA_TIRO_PRESETS = {
+    quick: {
+        yawOffsets: [-0.16, -0.08, 0, 0.08, 0.16],
+        pitchOffsets: [0.18, 0.32, 0.48, 0.64],
+        ringRadii: [72, 108, 146, 186],
+        ringStep: Math.PI / 7,
+        zoneOffsetX: 0.22,
+        zoneOffsetZ: 0.18,
+        maxCandidates: 60,
+        maxSteps: 220,
+        hitRadius: 7.5,
+        rangeMax: 360,
+        minVel: 0.03,
+        ratioTolerance: 0.32,
+        distIdeal: 114,
+        distTolerance: 84,
+        viableBonusCap: 8,
+    },
+    full: {
+        yawOffsets: [-0.25, -0.15, -0.08, 0, 0.08, 0.15, 0.25],
+        pitchOffsets: [0.08, 0.18, 0.28, 0.38, 0.48, 0.58, 0.68, 0.78],
+        ringRadii: [70, 98, 128, 162, 198],
+        ringStep: Math.PI / 9,
+        zoneOffsetX: 0.25,
+        zoneOffsetZ: 0.20,
+        maxCandidates: 180,
+        maxSteps: 300,
+        hitRadius: 7,
+        rangeMax: 360,
+        minVel: 0.03,
+        ratioTolerance: 0.24,
+        distIdeal: 124,
+        distTolerance: 92,
+        viableBonusCap: 12,
+    },
+};
+
 const MATERIALES = {
     roca: new THREE.MeshLambertMaterial({ color: 0x8a8478 }),
     metal: new THREE.MeshLambertMaterial({ color: 0x6d7982 }),
@@ -30,8 +72,8 @@ function generarMapaAleatorio(semilla, opciones) {
 
     const perfilMapa = construirPerfilAbierto(rand, opts.modo === "DAILY");
 
-    const raiz = new THREE.Group();
-    scene.add(raiz);
+    const raiz = (opts.rootGroup && opts.rootGroup.isGroup) ? opts.rootGroup : new THREE.Group();
+    if (!(opts.rootGroup && opts.rootGroup.isGroup)) scene.add(raiz);
 
     aplicarTema(perfilMapa.tema);
 
@@ -40,7 +82,12 @@ function generarMapaAleatorio(semilla, opciones) {
     const nodos = construirEscenarioAbierto(raiz, perfilMapa, rand);
     poblarObstaculosAbiertos(raiz, perfilMapa, rand, nodos);
 
-    if (opts.modo === "DAILY") {
+    const contexto = construirContextoGeneracion(opts);
+    const seleccion = seleccionarPosicionDianaInteligente(seedMapa, contexto);
+
+    if (seleccion && seleccion.posicion) {
+        diana_obj.position.set(seleccion.posicion.x, 0.15, seleccion.posicion.z);
+    } else if (opts.modo === "DAILY") {
         const pDaily = obtenerPosicionDianaDaily(seedDaily);
         diana_obj.position.set(pDaily.x, 0.15, pDaily.z);
     } else {
@@ -48,9 +95,28 @@ function generarMapaAleatorio(semilla, opciones) {
         diana_obj.position.set(pCamp.x, 0.15, pCamp.z);
     }
 
-    cajas_cache = colisionables.map(c => new THREE.Box3().setFromObject(c));
+    const target = new THREE.Vector3(diana_obj.position.x, 1, diana_obj.position.z);
+    const ratioObjetivo = contexto.ratioObjetivo;
 
-    const mejor = encontrarPosicionTiro();
+    let mejor = encontrarPosicionTiro(target, {
+        preset: "full",
+        ratioObjetivo,
+        minDist: contexto.minDistTiro,
+        distIdealOverride: contexto.distIdealTiro,
+        bloqueoObjetivo: contexto.bloqueoObjetivo,
+    });
+
+    // Fallback controlado si el mapa queda muy cerrado para los objetivos de distancia/cobertura.
+    if (!mejor && contexto.minDistTiro > DIST_MIN_DIANA_TIRO) {
+        mejor = encontrarPosicionTiro(target, {
+            preset: "full",
+            ratioObjetivo,
+            minDist: Math.max(DIST_MIN_DIANA_TIRO, Math.round(contexto.minDistTiro * 0.78)),
+            distIdealOverride: Math.max(90, Math.round(contexto.distIdealTiro * 0.88)),
+            bloqueoObjetivo: Math.max(0.08, contexto.bloqueoObjetivo - 0.07),
+        });
+    }
+
     if (mejor) {
         p_tiro.copy(mejor.pos);
         dificultad_calculada = mejor.dificultad;
@@ -409,7 +475,13 @@ function crearCaja(grupo, x, y, z, ancho, alto, prof, mat, colisionable) {
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     grupo.add(mesh);
-    if (colisionable !== false) colisionables.push(mesh);
+    if (colisionable !== false) {
+        colisionables.push(mesh);
+        cajas_cache.push(new THREE.Box3(
+            new THREE.Vector3(x - ancho / 2, y, z - prof / 2),
+            new THREE.Vector3(x + ancho / 2, y + alto, z + prof / 2)
+        ));
+    }
     return mesh;
 }
 
@@ -420,12 +492,210 @@ function crearCilindro(grupo, x, z, r, alto, mat) {
     mesh.receiveShadow = true;
     grupo.add(mesh);
     colisionables.push(mesh);
+    cajas_cache.push(new THREE.Box3(
+        new THREE.Vector3(x - r, 0, z - r),
+        new THREE.Vector3(x + r, alto, z + r)
+    ));
     return mesh;
 }
 
 function registrarZona(xMin, xMax, zMin, zMax, tag) {
     if ((xMax - xMin) < 8 || (zMax - zMin) < 8) return;
     zonas_navegables.push({ xMin, xMax, zMin, zMax, tag: tag || "zona" });
+}
+
+function construirContextoGeneracion(opts) {
+    const modo = opts && opts.modo === "DAILY" ? "DAILY" : "CAMPANA";
+    const nivelRaw = Number(opts && opts.nivelCampana);
+    const nivelCampana = Math.max(1, Math.min(5, Number.isFinite(nivelRaw) ? Math.floor(nivelRaw) : 1));
+
+    const ratioObjetivo = modo === "DAILY"
+        ? CONFIG_DIFICULTAD.DAILY_RATIO_OBJETIVO
+        : CONFIG_DIFICULTAD.CAMPANA_RATIO_OBJETIVO[nivelCampana - 1];
+
+    const minDistCamp = [58, 68, 78, 88, 96];
+    const distIdealCamp = [96, 110, 124, 138, 150];
+    const bloqueoCamp = [0.12, 0.16, 0.20, 0.24, 0.28];
+
+    const minDistTiro = modo === "DAILY" ? 72 : minDistCamp[nivelCampana - 1];
+    const distIdealTiro = modo === "DAILY" ? 122 : distIdealCamp[nivelCampana - 1];
+    const bloqueoObjetivo = modo === "DAILY" ? 0.18 : bloqueoCamp[nivelCampana - 1];
+
+    return {
+        modo,
+        nivelCampana,
+        ratioObjetivo,
+        tagPreferido: obtenerTagPreferidoDiana(modo, nivelCampana),
+        radioDiana: 5.6,
+        minDistTiro,
+        distIdealTiro,
+        bloqueoObjetivo,
+    };
+}
+
+function obtenerTagPreferidoDiana(modo, nivelCampana) {
+    if (modo === "DAILY") return "isla";
+    if (nivelCampana <= 2) return "hub";
+    if (nivelCampana >= 4) return "satelite";
+    return "isla";
+}
+
+function seleccionarPosicionDianaInteligente(seedMapa, contexto) {
+    const rand = crearRngDeterminista(seedMapa * 97 + 71);
+    const candidatos = construirCandidatosDiana(rand, contexto);
+    if (candidatos.length === 0) return null;
+
+    for (const c of candidatos) {
+        c.heurScore = puntuarCandidatoDiana(c, contexto);
+    }
+
+    candidatos.sort((a, b) => b.heurScore - a.heurScore);
+    const top = candidatos.slice(0, Math.min(5, candidatos.length));
+
+    let mejor = null;
+    let mejorScore = -Infinity;
+
+    for (const cand of top) {
+        const target = new THREE.Vector3(cand.x, 1, cand.z);
+        let tiroRapido = encontrarPosicionTiro(target, {
+            preset: "quick",
+            ratioObjetivo: contexto.ratioObjetivo,
+            minDist: contexto.minDistTiro,
+            distIdealOverride: Math.round(contexto.distIdealTiro * 0.9),
+            bloqueoObjetivo: contexto.bloqueoObjetivo,
+        });
+
+        if (!tiroRapido && contexto.minDistTiro > DIST_MIN_DIANA_TIRO + 8) {
+            tiroRapido = encontrarPosicionTiro(target, {
+                preset: "quick",
+                ratioObjetivo: contexto.ratioObjetivo,
+                minDist: Math.max(DIST_MIN_DIANA_TIRO, Math.round(contexto.minDistTiro * 0.82)),
+                distIdealOverride: Math.round(contexto.distIdealTiro * 0.84),
+                bloqueoObjetivo: Math.max(0.08, contexto.bloqueoObjetivo - 0.06),
+            });
+        }
+
+        if (!tiroRapido) continue;
+
+        const ratio = tiroRapido.arcosTotales > 0 ? (tiroRapido.arcosViables / tiroRapido.arcosTotales) : 0;
+        const scoreRatio = 1 - clamp(Math.abs(ratio - contexto.ratioObjetivo) / 0.26, 0, 1);
+        const scoreBloqueo = 1 - clamp(Math.abs((tiroRapido.bloqueo || 0) - contexto.bloqueoObjetivo) / 0.28, 0, 1);
+        const scoreTotal = cand.heurScore * 0.34 + scoreRatio * 0.46 + scoreBloqueo * 0.20;
+
+        if (scoreTotal > mejorScore) {
+            mejorScore = scoreTotal;
+            mejor = {
+                posicion: new THREE.Vector3(cand.x, 0.15, cand.z),
+            };
+        }
+    }
+
+    if (mejor) return mejor;
+
+    const fallback = candidatos[0];
+    return {
+        posicion: new THREE.Vector3(fallback.x, 0.15, fallback.z),
+    };
+}
+
+function construirCandidatosDiana(rand, contexto) {
+    const total = contexto.modo === "DAILY" ? 56 : 48;
+    const candidatos = [];
+    const maxIntentos = total * 7;
+
+    for (let i = 0; i < maxIntentos && candidatos.length < total; i++) {
+        const preferirTag = i < Math.floor(total * 0.55) ? contexto.tagPreferido : null;
+        const zona = elegirZonaPonderada(rand, preferirTag);
+        if (!zona) break;
+
+        const x = lerp(zona.xMin + 5, zona.xMax - 5, rand());
+        const z = lerp(zona.zMin + 5, zona.zMax - 5, rand());
+
+        if (!posicionDianaLibre(x, z, contexto.radioDiana)) continue;
+
+        const distBorde = Math.min(x - zona.xMin, zona.xMax - x, z - zona.zMin, zona.zMax - z);
+        if (distBorde < 3.8) continue;
+
+        if (!agregarCandidatoSiLejano(candidatos, x, z, 8.5)) continue;
+        candidatos[candidatos.length - 1].zonaTag = zona.tag;
+        candidatos[candidatos.length - 1].distBorde = distBorde;
+    }
+
+    return candidatos;
+}
+
+function agregarCandidatoSiLejano(lista, x, z, minDist) {
+    const minDistSq = minDist * minDist;
+    for (const c of lista) {
+        const dx = c.x - x;
+        const dz = c.z - z;
+        if ((dx * dx + dz * dz) < minDistSq) return false;
+    }
+
+    lista.push({ x, z, zonaTag: "zona", distBorde: 0, heurScore: 0 });
+    return true;
+}
+
+function puntuarCandidatoDiana(candidato, contexto) {
+    const t = (contexto.nivelCampana - 1) / 4;
+
+    const objetivoNear = contexto.modo === "DAILY" ? 2.5 : lerp(1.5, 4.8, t);
+    const objetivoMid = contexto.modo === "DAILY" ? 6 : lerp(4, 9, t);
+
+    const obsNear = contarObstaculosAproximados(candidato.x, candidato.z, 11);
+    const obsMid = contarObstaculosAproximados(candidato.x, candidato.z, 20);
+
+    const tagScore = puntuarTagZona(candidato.zonaTag, contexto);
+    const bordeScore = clamp((candidato.distBorde - 4) / 10, 0, 1);
+    const nearScore = 1 - clamp(Math.abs(obsNear - objetivoNear) / (objetivoNear + 2), 0, 1);
+    const midScore = 1 - clamp(Math.abs(obsMid - objetivoMid) / (objetivoMid + 3), 0, 1);
+    const distanciaCentro = Math.hypot(candidato.x, candidato.z);
+    const spreadScore = clamp((distanciaCentro - 18) / 90, 0, 1);
+
+    return tagScore * 0.24 + bordeScore * 0.24 + nearScore * 0.24 + midScore * 0.18 + spreadScore * 0.10;
+}
+
+function puntuarTagZona(tag, contexto) {
+    if (contexto.modo === "DAILY") {
+        if (tag === "isla") return 1;
+        if (tag === "conector") return 0.9;
+        if (tag === "satelite") return 0.85;
+        return 0.75;
+    }
+
+    const n = contexto.nivelCampana;
+    if (n <= 2) {
+        if (tag === "hub") return 1;
+        if (tag === "isla") return 0.9;
+        if (tag === "conector") return 0.82;
+        return 0.7;
+    }
+    if (n >= 4) {
+        if (tag === "satelite") return 1;
+        if (tag === "conector") return 0.95;
+        if (tag === "isla") return 0.9;
+        return 0.76;
+    }
+
+    if (tag === "isla") return 1;
+    if (tag === "conector") return 0.95;
+    if (tag === "satelite") return 0.86;
+    return 0.8;
+}
+
+function contarObstaculosAproximados(x, z, radio) {
+    const r2 = radio * radio;
+    let n = 0;
+
+    for (const box of cajas_cache) {
+        const cx = (box.min.x + box.max.x) * 0.5;
+        const cz = (box.min.z + box.max.z) * 0.5;
+        const dx = cx - x;
+        const dz = cz - z;
+        if ((dx * dx + dz * dz) <= r2) n++;
+    }
+
+    return n;
 }
 
 function obtenerPosicionDianaDaily(seed) {
@@ -482,39 +752,45 @@ function elegirZonaPonderada(rand, tagPreferido) {
 }
 
 function posicionDianaLibre(x, z, radio) {
-    const esfera = new THREE.Sphere(new THREE.Vector3(x, 1, z), radio);
-    for (const obj of colisionables) {
-        const box = new THREE.Box3().setFromObject(obj);
-        if (box.intersectsSphere(esfera)) return false;
+    const radio2 = radio * radio;
+    for (const box of cajas_cache) {
+        if (intersecaEsferaCaja(x, 1, z, radio2, box)) return false;
     }
     return true;
 }
 
-function encontrarPosicionTiro() {
+function encontrarPosicionTiro(target, opciones) {
     const ALT = 6.6;
-    const target = diana_obj
-        ? new THREE.Vector3(diana_obj.position.x, 1, diana_obj.position.z)
-        : new THREE.Vector3(0, 1, 0);
+    const opts = opciones || {};
+    const cfg = obtenerConfigBusquedaTiro(opts.preset || "full");
+    const ratioObjetivo = Number.isFinite(opts.ratioObjetivo)
+        ? opts.ratioObjetivo
+        : CONFIG_DIFICULTAD.DAILY_RATIO_OBJETIVO;
+    const minDist = Math.max(0, Number(opts.minDist) || DIST_MIN_DIANA_TIRO);
+    const distIdeal = Number.isFinite(opts.distIdealOverride) ? Number(opts.distIdealOverride) : cfg.distIdeal;
+    const bloqueoObjetivo = Number.isFinite(opts.bloqueoObjetivo) ? Number(opts.bloqueoObjetivo) : 0.16;
 
-    const candidatos = generarCandidatos(ALT, target);
+    const candidatos = generarCandidatos(ALT, target, cfg);
 
     let mejor = null;
     let mejorPunt = -Infinity;
 
     for (const pos of candidatos) {
         if (posicionDentroMuro(pos)) continue;
-        if (pos.distanceTo(target) < DIST_MIN_DIANA_TIRO) continue;
 
-        const test = contarArcosViables(pos, target);
-        if (test.viables === 0) continue;
+        const distTarget = pos.distanceTo(target);
+        if (distTarget < minDist) continue;
+
+        const test = contarArcosViables(pos, target, cfg);
+        if (test.viables === 0 || test.total === 0) continue;
 
         const ratio = test.viables / test.total;
-        let punt;
-
-        if (ratio < 0.05) punt = -100;
-        else if (ratio <= 0.34) punt = 100 - Math.abs(ratio - 0.21) * 300;
-        else if (ratio <= 0.70) punt = 58 - ratio * 50;
-        else punt = 8 - ratio * 26;
+        const bloqueo = medirBloqueoLinea(pos, target);
+        const scoreRatio = 1 - clamp(Math.abs(ratio - ratioObjetivo) / cfg.ratioTolerance, 0, 1);
+        const scoreDist = 1 - clamp(Math.abs(distTarget - distIdeal) / cfg.distTolerance, 0, 1);
+        const scoreBloqueo = 1 - clamp(Math.abs(bloqueo - bloqueoObjetivo) / 0.30, 0, 1);
+        const bonusViables = Math.min(cfg.viableBonusCap, test.viables) * 1.4;
+        const punt = scoreRatio * 100 + scoreDist * 20 + scoreBloqueo * 34 + bonusViables;
 
         if (punt > mejorPunt) {
             mejorPunt = punt;
@@ -522,6 +798,8 @@ function encontrarPosicionTiro() {
                 pos: pos.clone(),
                 arcosViables: test.viables,
                 arcosTotales: test.total,
+                ratio,
+                bloqueo,
                 dificultad: Math.max(1, Math.min(10, Math.round((1 - Math.min(ratio, 1)) * 10))),
             };
         }
@@ -530,7 +808,12 @@ function encontrarPosicionTiro() {
     return mejor;
 }
 
-function generarCandidatos(y, target) {
+function obtenerConfigBusquedaTiro(preset) {
+    if (preset === "quick") return BUSQUEDA_TIRO_PRESETS.quick;
+    return BUSQUEDA_TIRO_PRESETS.full;
+}
+
+function generarCandidatos(y, target, cfg) {
     const out = [];
 
     for (const z of zonas_navegables) {
@@ -541,12 +824,12 @@ function generarCandidatos(y, target) {
         if (w < 9 || d < 9) continue;
 
         out.push(new THREE.Vector3(cx, y, cz));
-        out.push(new THREE.Vector3(cx + (w * 0.25), y, cz - (d * 0.2)));
-        out.push(new THREE.Vector3(cx - (w * 0.25), y, cz + (d * 0.2)));
+        out.push(new THREE.Vector3(cx + (w * cfg.zoneOffsetX), y, cz - (d * cfg.zoneOffsetZ)));
+        out.push(new THREE.Vector3(cx - (w * cfg.zoneOffsetX), y, cz + (d * cfg.zoneOffsetZ)));
     }
 
-    for (const r of [56, 76, 98, 124, 152]) {
-        for (let a = 0; a < Math.PI * 2; a += Math.PI / 9) {
+    for (const r of cfg.ringRadii) {
+        for (let a = 0; a < Math.PI * 2; a += cfg.ringStep) {
             out.push(new THREE.Vector3(
                 target.x + Math.sin(a) * r,
                 y,
@@ -555,10 +838,18 @@ function generarCandidatos(y, target) {
         }
     }
 
-    return out;
+    if (out.length <= cfg.maxCandidates) return out;
+
+    // Muestreo determinista para mantener variedad sin explotar coste de simulacion.
+    const sample = [];
+    const step = out.length / cfg.maxCandidates;
+    for (let i = 0; i < cfg.maxCandidates; i++) {
+        sample.push(out[Math.floor(i * step)]);
+    }
+    return sample;
 }
 
-function contarArcosViables(origen, target) {
+function contarArcosViables(origen, target, cfg) {
     const dir = target.clone().sub(origen).normalize();
     const yawBase = Math.atan2(-dir.x, -dir.z);
 
@@ -568,66 +859,134 @@ function contarArcosViables(origen, target) {
     let viables = 0;
     let total = 0;
 
-    const yawOffsets = [-0.25, -0.15, -0.08, 0, 0.08, 0.15, 0.25];
-    const pitchOffsets = [0.08, 0.18, 0.28, 0.38, 0.48, 0.58, 0.68, 0.78];
-
-    for (const dYaw of yawOffsets) {
-        for (const pitch of pitchOffsets) {
+    for (const dYaw of cfg.yawOffsets) {
+        for (const pitch of cfg.pitchOffsets) {
             const yaw = yawBase + dYaw;
-            const vel = new THREE.Vector3(
-                -Math.sin(yaw) * Math.cos(pitch) * VEL,
-                Math.sin(pitch) * VEL + YALZ,
-                -Math.cos(yaw) * Math.cos(pitch) * VEL
-            );
+            const vx = -Math.sin(yaw) * Math.cos(pitch) * VEL;
+            const vy = Math.sin(pitch) * VEL + YALZ;
+            const vz = -Math.cos(yaw) * Math.cos(pitch) * VEL;
 
             total++;
-            if (simularArco(origen, vel, target)) viables++;
+            if (simularArco(origen, vx, vy, vz, target, cfg)) viables++;
         }
     }
 
     return { viables, total };
 }
 
-function simularArco(origen, velInicial, target) {
-    const pos = origen.clone();
-    const vel = velInicial.clone();
-    const esfera = new THREE.Sphere(pos, 0.5);
+function simularArco(origen, vxInicial, vyInicial, vzInicial, target, cfg) {
+    let px = origen.x;
+    let py = origen.y;
+    let pz = origen.z;
 
-    for (let step = 0; step < 300; step++) {
-        vel.y -= 0.016;
-        vel.multiplyScalar(0.9975);
-        pos.add(vel);
-        esfera.center.copy(pos);
+    let vx = vxInicial;
+    let vy = vyInicial;
+    let vz = vzInicial;
 
-        if (pos.distanceTo(target) < 7) return true;
+    const tx = target.x;
+    const ty = target.y;
+    const tz = target.z;
 
-        if (pos.y < 0.5) {
-            pos.y = 0.5;
-            vel.y = Math.abs(vel.y) * 0.4;
-            vel.x *= 0.72;
-            vel.z *= 0.72;
+    const radio = 0.5;
+    const radio2 = radio * radio;
+    const hitR2 = cfg.hitRadius * cfg.hitRadius;
+    const maxRange2 = cfg.rangeMax * cfg.rangeMax;
+    const minVel2 = cfg.minVel * cfg.minVel;
+
+    for (let step = 0; step < cfg.maxSteps; step++) {
+        vy -= 0.016;
+        vx *= 0.9975;
+        vy *= 0.9975;
+        vz *= 0.9975;
+
+        px += vx;
+        py += vy;
+        pz += vz;
+
+        const dx = px - tx;
+        const dy = py - ty;
+        const dz = pz - tz;
+        if ((dx * dx + dy * dy + dz * dz) < hitR2) return true;
+
+        if (py < 0.5) {
+            py = 0.5;
+            vy = Math.abs(vy) * 0.4;
+            vx *= 0.72;
+            vz *= 0.72;
         }
 
         for (const caja of cajas_cache) {
-            if (caja.intersectsSphere(esfera)) return false;
+            if (intersecaEsferaCaja(px, py, pz, radio2, caja)) return false;
         }
 
-        if (pos.distanceTo(target) > 360 || vel.length() < 0.03) return false;
+        if ((dx * dx + dz * dz) > maxRange2 || ((vx * vx + vy * vy + vz * vz) < minVel2)) return false;
     }
 
     return false;
 }
 
+function intersecaEsferaCaja(x, y, z, radio2, box) {
+    const qx = x < box.min.x ? box.min.x : (x > box.max.x ? box.max.x : x);
+    const qy = y < box.min.y ? box.min.y : (y > box.max.y ? box.max.y : y);
+    const qz = z < box.min.z ? box.min.z : (z > box.max.z ? box.max.z : z);
+
+    const dx = x - qx;
+    const dy = y - qy;
+    const dz = z - qz;
+
+    return (dx * dx + dy * dy + dz * dz) <= radio2;
+}
+
+function medirBloqueoLinea(origen, target) {
+    const samples = 14;
+    let hits = 0;
+
+    for (let i = 1; i < samples; i++) {
+        const t = i / samples;
+        const x = lerp(origen.x, target.x, t);
+        const y = lerp(origen.y, target.y, t);
+        const z = lerp(origen.z, target.z, t);
+
+        for (const box of cajas_cache) {
+            if (puntoEnCajaExpandida(x, y, z, box, 0.32)) {
+                hits++;
+                break;
+            }
+        }
+    }
+
+    return hits / (samples - 1);
+}
+
+function puntoEnCajaExpandida(x, y, z, box, margen) {
+    if (x < (box.min.x - margen) || x > (box.max.x + margen)) return false;
+    if (y < (box.min.y - margen) || y > (box.max.y + margen)) return false;
+    if (z < (box.min.z - margen) || z > (box.max.z + margen)) return false;
+    return true;
+}
+
 function posicionDentroMuro(pos) {
-    const test = new THREE.Box3(pos.clone().subScalar(0.45), pos.clone().addScalar(0.45));
-    return cajas_cache.some(c => c.intersectsBox(test));
+    const half = 0.45;
+    const minX = pos.x - half;
+    const maxX = pos.x + half;
+    const minY = pos.y - half;
+    const maxY = pos.y + half;
+    const minZ = pos.z - half;
+    const maxZ = pos.z + half;
+
+    for (const c of cajas_cache) {
+        if (minX > c.max.x || maxX < c.min.x) continue;
+        if (minY > c.max.y || maxY < c.min.y) continue;
+        if (minZ > c.max.z || maxZ < c.min.z) continue;
+        return true;
+    }
+    return false;
 }
 
 function posicionDentroMuroConColisionables(x, z, radio) {
-    const esfera = new THREE.Sphere(new THREE.Vector3(x, 1, z), radio);
-    for (const obj of colisionables) {
-        const box = new THREE.Box3().setFromObject(obj);
-        if (box.intersectsSphere(esfera)) return true;
+    const radio2 = radio * radio;
+    for (const box of cajas_cache) {
+        if (intersecaEsferaCaja(x, 1, z, radio2, box)) return true;
     }
     return false;
 }
@@ -661,4 +1020,8 @@ function crearRngDeterminista(seed) {
 
 function lerp(a, b, t) {
     return a + (b - a) * t;
+}
+
+function clamp(v, a, b) {
+    return Math.max(a, Math.min(b, v));
 }

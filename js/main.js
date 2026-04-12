@@ -8,6 +8,7 @@ var colisionables = [];
 var diana_obj     = null;
 var estadoJuego   = "MENU";
 var p_tiro        = new THREE.Vector3(0, 6.6, 80);
+var rondaRoot     = null;
 
 // Estadisticas de sesion
 var stats = crearStatsBase();
@@ -32,11 +33,9 @@ function crearStatsBase() {
     return {
         ronda: 0,
         lanzamientos: 0,
-        mejorRebotes: Infinity,
         puntos: 0,
         maxNivel: 0,
         mejorPuntajeSesion: 0,
-        maxPorNivel: {},
     };
 }
 
@@ -53,6 +52,12 @@ var camaraObjetivo = new THREE.Vector3();
 var camaraTarget   = new THREE.Vector3();
 const CAM_OFFSET   = new THREE.Vector3(0, 4, 8);
 const CAM_LERP     = 0.06;
+const CAM_UP       = new THREE.Vector3(0, 1, 0);
+const CAM_LOOK_TIRO = new THREE.Vector3(0, 5, 0);
+const TMP_DIR_VEL   = new THREE.Vector3();
+const TMP_OFFSET    = new THREE.Vector3();
+const TMP_LOOK_MAT  = new THREE.Matrix4();
+const TMP_QUAT      = new THREE.Quaternion();
 
 // ---- CONFIG OBJETIVOS CAMPANA ----
 const OBJETIVOS_CAMPANA = [
@@ -60,7 +65,6 @@ const OBJETIVOS_CAMPANA = [
         id: "camp1",
         nombre: "Nivel 1 - Control Del Site",
         regla: "Detona dentro del site. Los rebotes suman puntuacion sin limite maximo.",
-        estrellas: [750, 1100, 1500],
         evaluar: (d) => {
             const inSite = Math.abs(d.posicion.x) <= 30 && Math.abs(d.posicion.z) <= 30;
             const dist = d.posicion.length();
@@ -76,7 +80,6 @@ const OBJETIVOS_CAMPANA = [
         id: "camp2",
         nombre: "Nivel 2 - Bloqueo De Pasillo",
         regla: "Detona en el pasillo principal (z 34-94) con al menos 1 rebote.",
-        estrellas: [900, 1300, 1750],
         evaluar: (d) => {
             const inZona = d.posicion.z >= 34 && d.posicion.z <= 94 && Math.abs(d.posicion.x) <= 14;
             const rebotesOk = d.rebotes >= 1;
@@ -93,7 +96,6 @@ const OBJETIVOS_CAMPANA = [
         id: "camp3",
         nombre: "Nivel 3 - Conector Izquierdo",
         regla: "Detona en conector izquierdo (x -72 a -34, z -2 a 20) con 1 o mas rebotes.",
-        estrellas: [1050, 1450, 1950],
         evaluar: (d) => {
             const inZona = d.posicion.x >= -72 && d.posicion.x <= -34 && d.posicion.z >= -2 && d.posicion.z <= 20;
             const rebotesOk = d.rebotes >= 1;
@@ -110,7 +112,6 @@ const OBJETIVOS_CAMPANA = [
         id: "camp4",
         nombre: "Nivel 4 - Callejon Derecho",
         regla: "Detona en callejon derecho (x 34-60, z 6-24) con 2 o mas rebotes.",
-        estrellas: [1200, 1650, 2200],
         evaluar: (d) => {
             const inZona = d.posicion.x >= 34 && d.posicion.x <= 60 && d.posicion.z >= 6 && d.posicion.z <= 24;
             const rebotesOk = d.rebotes >= 2;
@@ -127,7 +128,6 @@ const OBJETIVOS_CAMPANA = [
         id: "camp5",
         nombre: "Nivel 5 - Plantado De Precision",
         regla: "Detona a 8m de la diana, con 2 o mas rebotes y antes de 5s.",
-        estrellas: [1400, 1900, 2500],
         evaluar: (d) => {
             const dist = d.posicion.distanceTo(obtenerPosicionDiana());
             const distanciaOk = dist <= 8;
@@ -148,7 +148,6 @@ const OBJETIVOS_DAILY = [
         id: "daily1",
         nombre: "Daily - Precision Absoluta",
         regla: "Detona a 6m de la diana. Los rebotes puntuan sin maximo.",
-        estrellas: [1000, 1500, 2100],
         evaluar: (d) => {
             const dist = d.posicion.distanceTo(obtenerPosicionDiana());
             const ok = dist <= 6;
@@ -164,7 +163,6 @@ const OBJETIVOS_DAILY = [
         id: "daily2",
         nombre: "Daily - Timing De Entrada",
         regla: "Detona en pasillo principal en menos de 4.5s y con 1+ rebote.",
-        estrellas: [1050, 1550, 2150],
         evaluar: (d) => {
             const inZona = d.posicion.z >= 34 && d.posicion.z <= 94 && Math.abs(d.posicion.x) <= 14;
             const ok = inZona && d.vueloMs <= 4500 && d.rebotes >= 1;
@@ -180,7 +178,6 @@ const OBJETIVOS_DAILY = [
         id: "daily3",
         nombre: "Daily - Doble Zona",
         regla: "Detona en conector izquierdo o callejon derecho con 1+ rebote.",
-        estrellas: [950, 1450, 2050],
         evaluar: (d) => {
             const left = d.posicion.x >= -72 && d.posicion.x <= -34 && d.posicion.z >= -2 && d.posicion.z <= 20;
             const right = d.posicion.x >= 34 && d.posicion.x <= 60 && d.posicion.z >= 6 && d.posicion.z <= 24;
@@ -290,7 +287,6 @@ function iniciarCampana() {
     stats.ronda = 1;
     avancePendiente = null;
     objetivoActual = OBJETIVOS_CAMPANA[0];
-    actualizarMaxNivelActual();
     setTextoMenu("Modo Libre iniciado. Supera 5 niveles incrementales.");
     ocultarMenu();
     nuevaRonda();
@@ -316,7 +312,6 @@ function iniciarDaily() {
     avancePendiente = null;
 
     objetivoActual = OBJETIVOS_DAILY[dailySeed % OBJETIVOS_DAILY.length];
-    actualizarMaxNivelActual();
 
     const restantes = intentosDailyRestantes();
     setTextoMenu(`Daily ${dailyKey} listo. Intentos disponibles: ${restantes}/${DAILY_INTENTOS_MAX}.`);
@@ -474,16 +469,20 @@ function reanudarPartidaPausada() {
 // LOAD SCENE
 // ==========================================
 function loadScene() {
-    crearSuelo();
+    if (rondaRoot && rondaRoot.parent) rondaRoot.parent.remove(rondaRoot);
+    rondaRoot = new THREE.Group();
+    scene.add(rondaRoot);
+
+    crearSuelo(rondaRoot);
 
     if (typeof generarMapaAleatorio === "function") {
         if (modoJuego === "DAILY") {
             stats.ronda = 1;
-            generarMapaAleatorio(dailySeed, { modo: "DAILY", dianaSeed: dailySeed });
+            generarMapaAleatorio(dailySeed, { modo: "DAILY", dianaSeed: dailySeed, rootGroup: rondaRoot });
         } else {
             const seedCampana = Math.random() * 9999;
             stats.ronda = OBJETIVOS_CAMPANA.indexOf(objetivoActual) + 1;
-            generarMapaAleatorio(seedCampana, { modo: "CAMPANA" });
+            generarMapaAleatorio(seedCampana, { modo: "CAMPANA", rootGroup: rondaRoot, nivelCampana: stats.ronda });
         }
 
         actualizarHUD();
@@ -495,14 +494,16 @@ function loadScene() {
     setTimeout(iniciarCinematica, 1200);
 }
 
-function crearSuelo() {
+function crearSuelo(rootGroup) {
+    const host = rootGroup || scene;
+
     const suelo = new THREE.Mesh(
         new THREE.PlaneGeometry(600, 600),
         new THREE.MeshLambertMaterial({ color: 0x6e6e60 })
     );
     suelo.rotation.x = -Math.PI / 2;
     suelo.receiveShadow = true;
-    scene.add(suelo);
+    host.add(suelo);
 
     const site = new THREE.Mesh(
         new THREE.PlaneGeometry(80, 80),
@@ -511,7 +512,7 @@ function crearSuelo() {
     site.rotation.x = -Math.PI / 2;
     site.position.y = 0.01;
     site.receiveShadow = true;
-    scene.add(site);
+    host.add(site);
 }
 
 // ==========================================
@@ -576,23 +577,21 @@ function actualizarCamaraSeguimiento() {
         ? humo_obj.position
         : granada_obj.position;
 
-    let dirVel = new THREE.Vector3();
     if (typeof vel !== "undefined" && vel.length() > 0.01) {
-        dirVel.copy(vel).normalize();
+        TMP_DIR_VEL.copy(vel).normalize();
     } else {
-        dirVel.set(0, -0.3, 1).normalize();
+        TMP_DIR_VEL.set(0, -0.3, 1).normalize();
     }
 
-    const offsetMundo = dirVel.clone().multiplyScalar(-CAM_OFFSET.z).add(new THREE.Vector3(0, CAM_OFFSET.y, 0));
-    camaraObjetivo.copy(objetivo).add(offsetMundo);
-    camaraTarget.copy(objetivo).addScaledVector(dirVel, 3);
+    TMP_OFFSET.set(0, CAM_OFFSET.y, 0).addScaledVector(TMP_DIR_VEL, -CAM_OFFSET.z);
+    camaraObjetivo.copy(objetivo).add(TMP_OFFSET);
+    camaraTarget.copy(objetivo).addScaledVector(TMP_DIR_VEL, 3);
 
     camera.position.lerp(camaraObjetivo, CAM_LERP);
 
-    const lookAtMatrix = new THREE.Matrix4();
-    lookAtMatrix.lookAt(camera.position, camaraTarget, new THREE.Vector3(0, 1, 0));
-    const targetQuat = new THREE.Quaternion().setFromRotationMatrix(lookAtMatrix);
-    camera.quaternion.slerp(targetQuat, CAM_LERP * 1.5);
+    TMP_LOOK_MAT.lookAt(camera.position, camaraTarget, CAM_UP);
+    TMP_QUAT.setFromRotationMatrix(TMP_LOOK_MAT);
+    camera.quaternion.slerp(TMP_QUAT, CAM_LERP * 1.5);
 }
 
 // ==========================================
@@ -742,7 +741,7 @@ function procesarResultadoLanzamiento(data) {
     registrarLanzamiento(data.rebotes);
 
     const evalObj = objetivoActual.evaluar(data);
-    const score = calcularPuntuacion(data, evalObj, objetivoActual);
+    const score = calcularPuntuacion(data, evalObj);
     stats.puntos += score.total;
     if (score.total > stats.mejorPuntajeSesion) stats.mejorPuntajeSesion = score.total;
     actualizarMaxPuntajeNivel(score.total);
@@ -751,7 +750,7 @@ function procesarResultadoLanzamiento(data) {
     mostrarResultado(score, evalObj, data);
 
     if (modoJuego === "DAILY") {
-        guardarEnRankingDaily(score.total, score.estrellas, evalObj.ok);
+        guardarEnRankingDaily(score.total, score.estrellas);
 
         if (intentosDailyRestantes() <= 0) {
             mostrarBoton('btn-lanzar', false);
@@ -768,7 +767,7 @@ function procesarResultadoLanzamiento(data) {
     }
 }
 
-function calcularPuntuacion(data, evalObj, obj) {
+function calcularPuntuacion(data, evalObj) {
     const precisionNorm = clamp01(evalObj.precision);
     const rebotesNorm = clamp01(evalObj.reboteScore);
     const impactoDiana = evaluarImpactoDiana(data.posicion);
@@ -790,7 +789,7 @@ function calcularPuntuacion(data, evalObj, obj) {
         total = Math.round(total * (evalObj.ok ? 0.45 : 0.30));
     }
 
-    const estrellas = calcularEstrellas(total, obj.estrellas, evalObj.ok, data.posicion, impactoDiana);
+    const estrellas = calcularEstrellas(data.posicion, impactoDiana);
     return {
         total,
         estrellas,
@@ -799,7 +798,7 @@ function calcularPuntuacion(data, evalObj, obj) {
     };
 }
 
-function calcularEstrellas(total, umbrales, objetivoCumplido, posicionDetonacion, impactoDiana) {
+function calcularEstrellas(posicionDetonacion, impactoDiana) {
     const impacto = impactoDiana || (posicionDetonacion ? evaluarImpactoDiana(posicionDetonacion) : null);
     if (!impacto || !impacto.acierto) return 0;
 
@@ -914,7 +913,6 @@ function ejecutarAvancePendiente() {
     if (avancePendiente === "SIGUIENTE_NIVEL") {
         const idx = OBJETIVOS_CAMPANA.indexOf(objetivoActual);
         objetivoActual = OBJETIVOS_CAMPANA[idx + 1];
-        actualizarMaxNivelActual();
         avancePendiente = null;
         nuevaRonda();
         return true;
@@ -931,26 +929,9 @@ function ejecutarAvancePendiente() {
     return false;
 }
 
-function claveNivelActual() {
-    if (!objetivoActual || !objetivoActual.id) return "sin_objetivo";
-    if (modoJuego === "DAILY") return `DAILY_${dailyKey || "sin_fecha"}_${objetivoActual.id}`;
-    if (modoJuego === "CAMPANA") return `CAMPANA_${objetivoActual.id}`;
-    return objetivoActual.id;
-}
-
-function actualizarMaxNivelActual() {
-    const key = claveNivelActual();
-    stats.maxNivel = stats.maxPorNivel[key] || 0;
-}
-
 function actualizarMaxPuntajeNivel(puntajeLanzamiento) {
-    const key = claveNivelActual();
-    const actual = stats.maxPorNivel[key] || 0;
-    if (puntajeLanzamiento > actual) {
-        stats.maxPorNivel[key] = puntajeLanzamiento;
+    if (puntajeLanzamiento > stats.maxNivel) {
         stats.maxNivel = puntajeLanzamiento;
-    } else {
-        stats.maxNivel = actual;
     }
 }
 
@@ -1063,7 +1044,7 @@ function leerRankingDaily() {
     }
 }
 
-function guardarEnRankingDaily(puntaje, estrellas, objetivoCumplido) {
+function guardarEnRankingDaily(puntaje, estrellas) {
     sincronizarClaveDailyHoy();
 
     const arr = leerRankingDaily();
@@ -1071,7 +1052,6 @@ function guardarEnRankingDaily(puntaje, estrellas, objetivoCumplido) {
         name: nombreJugador || "ANON",
         score: puntaje,
         stars: Math.max(0, Math.min(3, Number(estrellas) || 0)),
-        ok: !!objetivoCumplido,
         launches: stats.lanzamientos,
         at: new Date().toLocaleTimeString(),
     });
@@ -1126,8 +1106,8 @@ function volverAPosicionTiro() {
         .to({ x: p_tiro.x, y: p_tiro.y, z: p_tiro.z }, 1400)
         .easing(TWEEN.Easing.Cubic.InOut)
         .onUpdate(() => {
-            const m = new THREE.Matrix4().lookAt(camera.position, new THREE.Vector3(0, 5, 0), new THREE.Vector3(0, 1, 0));
-            camera.quaternion.setFromRotationMatrix(m);
+            TMP_LOOK_MAT.lookAt(camera.position, CAM_LOOK_TIRO, CAM_UP);
+            camera.quaternion.setFromRotationMatrix(TMP_LOOK_MAT);
         })
         .onComplete(() => {
             if (ejecutarAvancePendiente()) return;
@@ -1182,9 +1162,11 @@ function nuevaRonda() {
 
     if (timer_det) { clearTimeout(timer_det); timer_det = null; }
 
-    const basura = [];
-    scene.traverse(obj => { if (obj.isMesh || obj.isGroup) basura.push(obj); });
-    basura.forEach(obj => scene.remove(obj));
+    if (rondaRoot && rondaRoot.parent) rondaRoot.parent.remove(rondaRoot);
+    rondaRoot = null;
+
+    if (granada_obj && granada_obj.parent) granada_obj.parent.remove(granada_obj);
+    if (humo_obj && humo_obj.parent) humo_obj.parent.remove(humo_obj);
 
     granada_obj = null;
     humo_obj    = null;
@@ -1377,7 +1359,6 @@ function actualizarHUD() {
 
 function registrarLanzamiento(rebotes) {
     stats.lanzamientos++;
-    if (rebotes < stats.mejorRebotes) stats.mejorRebotes = rebotes;
     if (modoJuego === "DAILY") guardarProgresoDaily();
     actualizarHUD();
 }

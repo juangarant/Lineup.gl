@@ -38,6 +38,14 @@ const MIN_VEL_IMPACTO_REBOTE  = 0.18;
 
 // ---- MATERIAL TRAIL ----
 const MAT_TRAIL = new THREE.MeshBasicMaterial({ color: 0xffff00, transparent: true, opacity: 0.5 });
+const GEO_TRAIL = new THREE.SphereGeometry(0.08, 4, 4);
+
+// Temporales para evitar asignaciones por frame
+const TMP_BOX_COL = new THREE.Box3();
+const TMP_P_CERCANO = new THREE.Vector3();
+const TMP_NORMAL = new THREE.Vector3();
+const TMP_VN = new THREE.Vector3();
+const TMP_VT = new THREE.Vector3();
 
 
 function crearGranadaFallback() {
@@ -256,6 +264,10 @@ function actualizarFisicasGranada() {
     //    Divide el movimiento si la velocidad supera el radio de colisión
     const speed = vel.length();
     const SUB_STEPS = Math.max(1, Math.ceil(speed / RADIO));
+    const usarCajasCache = (typeof cajas_cache !== "undefined")
+        && Array.isArray(cajas_cache)
+        && cajas_cache.length > 0
+        && cajas_cache.length === colisionables.length;
 
     for (let sub = 0; sub < SUB_STEPS; sub++) {
         let colisionoMuro = false;
@@ -271,25 +283,24 @@ function actualizarFisicasGranada() {
 
         // Colisiones con muros
         for (let i = 0; i < colisionables.length; i++) {
-            const caja = new THREE.Box3().setFromObject(colisionables[i]);
+            const caja = usarCajasCache ? cajas_cache[i] : TMP_BOX_COL.setFromObject(colisionables[i]);
             if (!caja.intersectsSphere(esfera_col)) continue;
 
-            const pCercano = new THREE.Vector3();
-            caja.clampPoint(esfera_col.center, pCercano);
+            caja.clampPoint(esfera_col.center, TMP_P_CERCANO);
 
-            const normal = esfera_col.center.clone().sub(pCercano);
-            const dist = normal.length();
+            TMP_NORMAL.copy(esfera_col.center).sub(TMP_P_CERCANO);
+            const dist = TMP_NORMAL.length();
 
             if (dist < 0.0001) continue;
-            normal.divideScalar(dist);
+            TMP_NORMAL.divideScalar(dist);
 
             const penetracion = RADIO - dist;
             if (penetracion > 0) {
-                granada_obj.position.addScaledVector(normal, penetracion);
+                granada_obj.position.addScaledVector(TMP_NORMAL, penetracion);
                 esfera_col.set(granada_obj.position, RADIO);
             }
 
-            rebotarContraNormal(normal, COR_MURO, FRIC_MURO);
+            rebotarContraNormal(TMP_NORMAL, COR_MURO, FRIC_MURO);
             colisionoMuro = true;
             break;
         }
@@ -332,15 +343,15 @@ function rebotarContraNormal(normal, cor, fric) {
     if (vDotN >= 0) return;
 
     // Descomponer velocidad
-    const vn = normal.clone().multiplyScalar(vDotN);  // componente normal
-    const vt = vel.clone().sub(vn);                    // componente tangencial
+    TMP_VN.copy(normal).multiplyScalar(vDotN);  // componente normal
+    TMP_VT.copy(vel).sub(TMP_VN);               // componente tangencial
 
     // Aplicar COR y fricción tangencial
-    vn.multiplyScalar(-cor);
-    vt.multiplyScalar(fric);
+    TMP_VN.multiplyScalar(-cor);
+    TMP_VT.multiplyScalar(fric);
 
     // Recomponer
-    vel.copy(vn).add(vt);
+    vel.copy(TMP_VN).add(TMP_VT);
 
     // Actualizar giro al rebotar (cambia eje de rotación)
     vel_angular.set(
@@ -370,8 +381,7 @@ function registrarTrail(pos) {
 
     trail_puntos.push(pos.clone());
 
-    const geo = new THREE.SphereGeometry(0.08, 4, 4);
-    const dot = new THREE.Mesh(geo, MAT_TRAIL);
+    const dot = new THREE.Mesh(GEO_TRAIL, MAT_TRAIL);
     dot.position.copy(pos);
     scene.add(dot);
     trail_meshes.push(dot);

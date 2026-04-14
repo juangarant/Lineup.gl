@@ -4,6 +4,7 @@
 
 // ---- GLOBALS ----
 var renderer, scene, camera, cameraControls;
+var reloj = new THREE.Clock();
 var colisionables = [];
 var diana_obj     = null;
 var estadoJuego   = "MENU";
@@ -25,6 +26,7 @@ var nombreJugador = "";
 var partidaPausada = null;
 var solicitudCambioNivel = null;
 var vistaAntesCenital = null;
+var retornoCenitalAnimando = false;
 
 const TOTAL_NIVELES_CAMPANA = 5;
 const DAILY_INTENTOS_MAX = 3;
@@ -46,6 +48,12 @@ var pitch        = -0.08;
 const PITCH_MIN  = -Math.PI / 2 + 0.05;
 const PITCH_MAX  =  Math.PI / 4;
 const SENS       = 0.0018;
+const CARGA_MEDIA_CICLO_SEG = 0.75;
+const POTENCIA_BASE = 0.5;
+
+var cargandoLanzamiento = false;
+var potenciaLanzamiento = POTENCIA_BASE;
+var direccionPotencia = 1;
 
 // ---- SEGUIMIENTO DE CAMARA ----
 var camaraObjetivo = new THREE.Vector3();
@@ -240,8 +248,10 @@ function init() {
 
     window.addEventListener('resize', onResize);
     document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('keyup', onKeyUp);
     document.addEventListener('mousemove', onMouseMove);
     document.addEventListener('pointerlockchange', onPointerLockChange);
+    window.addEventListener('blur', cancelarCargaLanzamiento);
 
     document.getElementById('btn-lanzar').addEventListener('click', intentarLanzamiento);
     document.getElementById('btn-nuevo-mapa').addEventListener('click', () => {
@@ -334,10 +344,95 @@ function puedeLanzarEnModoActual() {
 }
 
 function intentarLanzamiento() {
+    let potencia = arguments.length > 0 ? arguments[0] : POTENCIA_BASE;
     if (estadoJuego !== "APUNTANDO" || !apuntandoFPS) return;
     if (solicitudCambioNivel) return;
     if (!puedeLanzarEnModoActual()) return;
-    lanzarGranada();
+    lanzarGranada(clamp01(potencia));
+}
+
+function iniciarCargaLanzamiento() {
+    if (estadoJuego !== "APUNTANDO" || !apuntandoFPS) return;
+    if (solicitudCambioNivel || !puedeLanzarEnModoActual()) return;
+    if (cargandoLanzamiento) return;
+
+    cargandoLanzamiento = true;
+    potenciaLanzamiento = POTENCIA_BASE;
+    direccionPotencia = 1;
+    actualizarIndicadorPotencia(potenciaLanzamiento, true);
+    setUI("CARGANDO LANZAMIENTO", "Suelta ESPACIO para lanzar");
+}
+
+function actualizarCargaLanzamiento(deltaSec) {
+    if (!cargandoLanzamiento) return;
+
+    const dt = Math.max(0.0001, Number(deltaSec) || (1 / 60));
+    const paso = dt / CARGA_MEDIA_CICLO_SEG;
+
+    potenciaLanzamiento += paso * direccionPotencia;
+
+    if (potenciaLanzamiento >= 1) {
+        potenciaLanzamiento = 1;
+        direccionPotencia = -1;
+    } else if (potenciaLanzamiento <= 0) {
+        potenciaLanzamiento = 0;
+        direccionPotencia = 1;
+    }
+
+    actualizarIndicadorPotencia(potenciaLanzamiento, true);
+}
+
+function soltarCargaYLanzar() {
+    if (!cargandoLanzamiento) return;
+
+    const potencia = clamp01(potenciaLanzamiento);
+    cargandoLanzamiento = false;
+    potenciaLanzamiento = POTENCIA_BASE;
+    actualizarIndicadorPotencia(potencia, false);
+    intentarLanzamiento(potencia);
+}
+
+function cancelarCargaLanzamiento() {
+    if (!cargandoLanzamiento) {
+        actualizarIndicadorPotencia(POTENCIA_BASE, false);
+        return;
+    }
+
+    cargandoLanzamiento = false;
+    potenciaLanzamiento = POTENCIA_BASE;
+    direccionPotencia = 1;
+    actualizarIndicadorPotencia(POTENCIA_BASE, false);
+}
+
+function obtenerColorPotencia(n) {
+    if (n < 0.34) return '#67d46f';
+    if (n < 0.67) return '#f0d24a';
+    return '#ef5b5b';
+}
+
+function etiquetaPotencia(n) {
+    if (n < 0.34) return 'FLOJO';
+    if (n < 0.67) return 'MEDIO';
+    return 'FUERTE';
+}
+
+function actualizarIndicadorPotencia(valorNorm, visible) {
+    const panel = document.getElementById('power-indicator');
+    const label = document.getElementById('power-label');
+    const fill = document.getElementById('power-fill');
+    if (!panel || !label || !fill) return;
+
+    const n = clamp01(Number(valorNorm) || 0);
+    const pct = Math.round(n * 100);
+    const color = obtenerColorPotencia(n);
+
+    fill.style.width = `${pct}%`;
+    fill.style.background = color;
+    label.style.color = color;
+    label.innerText = `POTENCIA ${pct}% - ${etiquetaPotencia(n)}`;
+
+    const mostrar = !!visible && estadoJuego === "APUNTANDO" && apuntandoFPS && !enVistaCenital;
+    panel.style.display = mostrar ? 'block' : 'none';
 }
 
 function ocultarMenu() {
@@ -388,7 +483,7 @@ function actualizarHUDModo() {
 
     if (isDaily) {
         panelControles.innerHTML = [
-            '<div class="ctrl-hint"><kbd>ESPACIO</kbd> Lanzar</div>',
+            '<div class="ctrl-hint"><kbd>ESPACIO</kbd> Mantener y soltar (potencia)</div>',
             '<div class="ctrl-hint"><kbd>V</kbd> Vista cenital</div>',
             '<div class="ctrl-hint"><kbd>ESC</kbd> Menu / reanudar</div>'
         ].join('');
@@ -396,7 +491,7 @@ function actualizarHUDModo() {
     }
 
     panelControles.innerHTML = [
-        '<div class="ctrl-hint"><kbd>ESPACIO</kbd> Lanzar</div>',
+        '<div class="ctrl-hint"><kbd>ESPACIO</kbd> Mantener y soltar (potencia)</div>',
         '<div class="ctrl-hint"><kbd>R</kbd> Nuevo mapa</div>',
         '<div class="ctrl-hint"><kbd>V</kbd> Vista cenital</div>',
         '<div class="ctrl-hint"><kbd>ESC</kbd> Soltar raton / menu</div>'
@@ -412,9 +507,9 @@ function textoApuntadoHUD() {
 
 function textoEnPosicionHUD() {
     if (modoJuego === "DAILY") {
-        return "Espacio = Lanzar | Esc = Soltar raton / Menu";
+        return "Mantener Espacio = Cargar | Soltar = Lanzar | Esc = Soltar raton / Menu";
     }
-    return "Espacio = Lanzar | Esc = Soltar raton | R = Reiniciar";
+    return "Mantener Espacio = Cargar | Soltar = Lanzar | Esc = Soltar raton | R = Reiniciar";
 }
 
 function pausarPartidaEnMenu() {
@@ -520,15 +615,22 @@ function crearSuelo(rootGroup) {
 // ==========================================
 function render() {
     requestAnimationFrame(render);
+    const deltaSec = Math.min(0.05, reloj.getDelta());
     if (fpsStats) fpsStats.begin();
     TWEEN.update();
 
     if (cameraControls.enabled) cameraControls.update();
 
-    if (apuntandoFPS && estadoJuego === "APUNTANDO") {
+    if (apuntandoFPS && estadoJuego === "APUNTANDO" && !retornoCenitalAnimando) {
         camera.position.copy(p_tiro);
         camera.rotation.y = yaw;
         camera.rotation.x = pitch;
+    }
+
+    if (estadoJuego === "APUNTANDO") {
+        actualizarCargaLanzamiento(deltaSec);
+    } else if (cargandoLanzamiento) {
+        cancelarCargaLanzamiento();
     }
 
     if (estadoJuego === "VOLANDO" || estadoJuego === "DETONANDO") {
@@ -536,8 +638,8 @@ function render() {
     }
 
     switch (estadoJuego) {
-        case "VOLANDO":   actualizarFisicasGranada(); break;
-        case "DETONANDO": expandirHumo();             break;
+        case "VOLANDO":   actualizarFisicasGranada(deltaSec); break;
+        case "DETONANDO": expandirHumo(deltaSec);             break;
     }
 
     renderer.render(scene, camera);
@@ -632,6 +734,7 @@ function cinematicaFase2() {
 function iniciarFaseApuntado() {
     cameraControls.enabled = false;
     estadoJuego = "APUNTANDO";
+    cancelarCargaLanzamiento();
     mostrarBoton('btn-lanzar', puedeLanzarEnModoActual());
     mostrarBoton('btn-nuevo-mapa', modoJuego !== "DAILY");
     setUI("PULSA ESPACIO PARA APUNTAR", textoApuntadoHUD());
@@ -650,6 +753,7 @@ function onPointerLockChange() {
     apuntandoFPS = (document.pointerLockElement === renderer.domElement);
 
     if (enVistaCenital) {
+        cancelarCargaLanzamiento();
         setOverlay(false);
         mostrarCrosshair(false);
         return;
@@ -662,6 +766,7 @@ function onPointerLockChange() {
         mostrarCrosshair(true);
         setUI("EN POSICION", textoEnPosicionHUD());
     } else {
+        cancelarCargaLanzamiento();
         mostrarCrosshair(false);
         if (estadoJuego === "APUNTANDO") {
             setOverlay(true);
@@ -681,12 +786,14 @@ function onMouseMove(e) {
 // TECLADO
 // ==========================================
 function onKeyDown(e) {
+    if (e.code === 'Space' && e.repeat) return;
+
     switch (e.code) {
         case 'Space':
             e.preventDefault();
             if (estadoJuego === "APUNTANDO") {
                 if (!apuntandoFPS) entrarModoApuntado();
-                else intentarLanzamiento();
+                else iniciarCargaLanzamiento();
             }
             break;
 
@@ -700,13 +807,17 @@ function onKeyDown(e) {
                     setUI("DAILY FIJO", "En daily no se puede cambiar el mapa");
                     return;
                 }
+                cancelarCargaLanzamiento();
                 salirPointerLock();
                 nuevaRonda();
             }
             break;
 
         case 'KeyV':
-            if (estadoJuego === "APUNTANDO") toggleVistaCenital();
+            if (estadoJuego === "APUNTANDO") {
+                cancelarCargaLanzamiento();
+                toggleVistaCenital();
+            }
             break;
 
         case 'Escape':
@@ -721,16 +832,29 @@ function onKeyDown(e) {
             }
 
             if (estadoJuego === "APUNTANDO" && apuntandoFPS) {
+                cancelarCargaLanzamiento();
                 salirPointerLock();
                 setUI("APUNTADO EN PAUSA", textoApuntadoHUD());
                 break;
             }
 
             if (modoJuego) {
+                cancelarCargaLanzamiento();
                 salirPointerLock();
                 pausarPartidaEnMenu();
             }
             break;
+    }
+}
+
+function onKeyUp(e) {
+    if (e.code !== 'Space') return;
+    e.preventDefault();
+
+    if (estadoJuego === "APUNTANDO" && apuntandoFPS) {
+        soltarCargaYLanzar();
+    } else {
+        cancelarCargaLanzamiento();
     }
 }
 
@@ -1148,6 +1272,7 @@ function volverAPosicionTiro() {
 function nuevaRonda() {
     solicitudCambioNivel = null;
     ocultarModalCambioNivel();
+    cancelarCargaLanzamiento();
 
     // Al generar un mapa nuevo, la mejor puntuacion de nivel debe reiniciarse.
     stats.maxNivel = 0;
@@ -1192,6 +1317,7 @@ function nuevaRonda() {
 // ==========================================
 function toggleVistaCenital() {
     if (!enVistaCenital) {
+        retornoCenitalAnimando = false;
         camera.rotation.order = 'YXZ';
         vistaAntesCenital = {
             estabaApuntandoFPS: !!apuntandoFPS,
@@ -1215,28 +1341,44 @@ function toggleVistaCenital() {
     } else {
         enVistaCenital = false;
         cameraControls.enabled = false;
+        retornoCenitalAnimando = true;
+        const volverEnModoApuntado = !!(vistaAntesCenital && vistaAntesCenital.estabaApuntandoFPS);
+        const yawObjetivo = vistaAntesCenital ? vistaAntesCenital.yaw : camera.rotation.y;
+        const pitchObjetivo = vistaAntesCenital
+            ? vistaAntesCenital.pitch
+            : Math.max(PITCH_MIN, Math.min(PITCH_MAX, camera.rotation.x));
+        const posInicio = camera.position.clone();
+        const posObjetivo = p_tiro.clone();
+        const yawInicio = camera.rotation.y;
+        const pitchInicio = camera.rotation.x;
+        const transicion = { t: 0 };
 
-        new TWEEN.Tween(camera.position)
-            .to({ x: p_tiro.x, y: p_tiro.y, z: p_tiro.z }, 900)
+        // Intentar recuperar pointer lock al salir de cenital si venias en modo apuntado real.
+        if (volverEnModoApuntado) entrarModoApuntado();
+
+        new TWEEN.Tween(transicion)
+            .to({ t: 1 }, 900)
             .easing(TWEEN.Easing.Cubic.InOut)
-            .onComplete(() => {
+            .onUpdate(() => {
+                camera.position.lerpVectors(posInicio, posObjetivo, transicion.t);
                 camera.rotation.order = 'YXZ';
-                const volverEnModoApuntado = !!(vistaAntesCenital && vistaAntesCenital.estabaApuntandoFPS);
-                if (vistaAntesCenital) {
-                    yaw = vistaAntesCenital.yaw;
-                    pitch = vistaAntesCenital.pitch;
-                } else {
-                    yaw = camera.rotation.y;
-                    pitch = Math.max(PITCH_MIN, Math.min(PITCH_MAX, camera.rotation.x));
-                }
+                camera.rotation.y = lerpAngulo(yawInicio, yawObjetivo, transicion.t);
+                camera.rotation.x = pitchInicio + (pitchObjetivo - pitchInicio) * transicion.t;
+                camera.rotation.z = 0;
+            })
+            .onComplete(() => {
+                retornoCenitalAnimando = false;
+                camera.rotation.order = 'YXZ';
+                yaw = yawObjetivo;
+                pitch = pitchObjetivo;
                 vistaAntesCenital = null;
                 camera.rotation.y = yaw;
                 camera.rotation.x = pitch;
                 camera.rotation.z = 0;
 
-                if (volverEnModoApuntado) {
-                    // Si antes de cenital estabas moviendo camara, vuelve directo a ese modo.
-                    apuntandoFPS = true;
+                const lockActivo = (document.pointerLockElement === renderer.domElement);
+                if (volverEnModoApuntado && lockActivo) {
+                    // Si antes de cenital estabas moviendo camara, vuelve directo solo si lock esta activo.
                     setOverlay(false);
                     mostrarCrosshair(true);
                     setUI("EN POSICION", textoEnPosicionHUD());
@@ -1256,6 +1398,13 @@ function toggleVistaCenital() {
 // ==========================================
 function clamp01(v) {
     return Math.max(0, Math.min(1, v));
+}
+
+function lerpAngulo(a, b, t) {
+    let delta = b - a;
+    while (delta > Math.PI) delta -= Math.PI * 2;
+    while (delta < -Math.PI) delta += Math.PI * 2;
+    return a + delta * clamp01(t);
 }
 
 function obtenerPosicionDiana() {
@@ -1330,6 +1479,7 @@ function evaluarImpactoDiana(posicionDetonacion) {
 function salirPointerLock() {
     if (document.pointerLockElement) document.exitPointerLock();
     apuntandoFPS = false;
+    cancelarCargaLanzamiento();
 }
 
 function setUI(titulo, instruccion, color) {

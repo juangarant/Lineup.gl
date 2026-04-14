@@ -853,7 +853,7 @@ function contarArcosViables(origen, target, cfg) {
     const dir = target.clone().sub(origen).normalize();
     const yawBase = Math.atan2(-dir.x, -dir.z);
 
-    const VEL = (typeof VEL_LANZAM === "number") ? VEL_LANZAM : 1.45;
+    const VEL = (typeof VEL_LANZAM === "number") ? VEL_LANZAM : 1.15;
     const YALZ = (typeof IMPULSO_Y === "number") ? IMPULSO_Y : 0.0;
 
     let viables = 0;

@@ -20,16 +20,18 @@ var granada_modelo_carga = null;
 const RADIO          = 0.5;
 const GRAVEDAD       = 0.016;    // Source 2 gravity feel por frame
 const DRAG_AIRE      = 0.9975;   // resistencia del aire (casi imperceptible)
-const VEL_LANZAM    = 1.45;     // modulo de fuerza del lanzamiento (mas suave)
+const VEL_LANZAM    = 1.15;     // modulo base usado como referencia en simuladores externos
+const VEL_LANZAM_MIN = 0.72;    // lanzamiento flojo
+const VEL_LANZAM_MAX = 1.58;    // lanzamiento fuerte
 const IMPULSO_Y      = 0.0;      // sin impulso vertical extra para respetar mejor el apuntado
 
 // Coeficiente de Restitución (COR) — cuánta energía conserva el componente normal
-const COR_SUELO      = 0.40;    // hormigón: ~0.4 (como acero-hormigón real)
-const COR_MURO       = 0.50;    // muros: ligeramente más elástico
+const COR_SUELO      = 0.55;    // mas energia tras rebote en suelo
+const COR_MURO       = 0.68;    // mas energia tras rebote en muros
 
 // Fricción tangencial — cuánta velocidad de deslizamiento se conserva
-const FRIC_SUELO     = 0.72;    // el suelo frena bastante el deslizamiento
-const FRIC_MURO      = 0.88;    // la pared frena menos (más "slide")
+const FRIC_SUELO     = 0.90;    // menor perdida tangencial en suelo
+const FRIC_MURO      = 0.95;    // menor perdida tangencial en muros
 
 // Umbral de detención (por componente)
 const VEL_STOP       = 0.04;
@@ -191,7 +193,7 @@ cargarModeloGranada();
 // ==========================================
 // LANZAR GRANADA
 // ==========================================
-function lanzarGranada() {
+function lanzarGranada(potenciaNorm) {
     if (estadoJuego !== "APUNTANDO") return;
 
     if (!granada_modelo_base) {
@@ -226,7 +228,9 @@ function lanzarGranada() {
     granada_obj.position.addScaledVector(dir, 1.6);
     granada_obj.position.y += 0.2;
 
-    vel.copy(dir).multiplyScalar(VEL_LANZAM);
+    const potencia = Math.max(0, Math.min(1, Number(potenciaNorm) || 0.5));
+    const velLanzamiento = VEL_LANZAM_MIN + (VEL_LANZAM_MAX - VEL_LANZAM_MIN) * potencia;
+    vel.copy(dir).multiplyScalar(velLanzamiento);
     if (IMPULSO_Y !== 0) vel.y += IMPULSO_Y;
 
     // Velocidad angular inicial (gira en el sentido del lanzamiento)
@@ -251,19 +255,22 @@ function lanzarGranada() {
 // ==========================================
 // ACTUALIZAR FÍSICAS (llamado cada frame)
 // ==========================================
-function actualizarFisicasGranada() {
+function actualizarFisicasGranada(deltaSec) {
     if (!granada_obj || !granada_obj.visible) return;
 
+    const dt = Math.max(0.0001, Number(deltaSec) || (1 / 60));
+    const dtNorm = dt * 60;
+
     // 1. DRAG AÉREO
-    vel.multiplyScalar(DRAG_AIRE);
+    vel.multiplyScalar(Math.pow(DRAG_AIRE, dtNorm));
 
     // 2. GRAVEDAD
-    vel.y -= GRAVEDAD;
+    vel.y -= GRAVEDAD * dtNorm;
 
     // 3. SUB-STEPPING — evita que la granada atraviese muros (tunneling)
     //    Divide el movimiento si la velocidad supera el radio de colisión
     const speed = vel.length();
-    const SUB_STEPS = Math.max(1, Math.ceil(speed / RADIO));
+    const SUB_STEPS = Math.max(1, Math.ceil((speed * dtNorm) / RADIO));
     const usarCajasCache = (typeof cajas_cache !== "undefined")
         && Array.isArray(cajas_cache)
         && cajas_cache.length > 0
@@ -272,7 +279,7 @@ function actualizarFisicasGranada() {
     for (let sub = 0; sub < SUB_STEPS; sub++) {
         let colisionoMuro = false;
 
-        granada_obj.position.addScaledVector(vel, 1 / SUB_STEPS);
+        granada_obj.position.addScaledVector(vel, dtNorm / SUB_STEPS);
         esfera_col.set(granada_obj.position, RADIO);
 
         // Colisión suelo
@@ -456,13 +463,16 @@ function instanciarHumo(posicion) {
     humo_activo = true;
 }
 
-function expandirHumo() {
+function expandirHumo(deltaSec) {
     if (!humo_activo || !humo_obj) return;
 
+    const dt = Math.max(0.0001, Number(deltaSec) || (1 / 60));
+    const dtNorm = dt * 60;
+
     if (humo_obj.scale.x < ESCALA_MAX_HUMO) {
-        humo_obj.scale.addScalar(0.18);
+        humo_obj.scale.addScalar(0.18 * dtNorm);
     } else {
-        humo_obj.material.opacity -= 0.004;
+        humo_obj.material.opacity -= 0.004 * dtNorm;
 
         if (humo_obj.material.opacity <= 0) {
             humo_activo = false;

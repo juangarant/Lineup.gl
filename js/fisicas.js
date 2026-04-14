@@ -424,7 +424,7 @@ function detonar() {
         registrarLanzamiento(num_rebotes);
     }
 
-    const txt = `${num_rebotes} rebote${num_rebotes !== 1 ? 's' : ''}`;
+    const txt = "Humo desplegado";
     if (typeof setUI === "function") {
         setUI("¡DETONACIÓN!", txt);
     } else {

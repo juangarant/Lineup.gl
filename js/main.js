@@ -71,79 +71,69 @@ const TMP_QUAT      = new THREE.Quaternion();
 const OBJETIVOS_CAMPANA = [
     {
         id: "camp1",
-        nombre: "Nivel 1 - Control Del Site",
-        regla: "Detona dentro del site. Los rebotes suman puntuacion sin limite maximo.",
+        nombre: "Nivel 1 - Calibracion",
+        regla: "Detona cerca de la diana para completar el objetivo.",
         evaluar: (d) => {
-            const inSite = Math.abs(d.posicion.x) <= 30 && Math.abs(d.posicion.z) <= 30;
-            const dist = d.posicion.length();
+            const dist = d.posicion.distanceTo(obtenerPosicionDiana());
             return {
-                ok: inSite,
-                detalle: inSite ? "Control limpio" : "Fuera del site",
-                precision: clamp01(1 - dist / 80),
+                ok: dist <= 26,
+                detalle: dist <= 26 ? "Objetivo cumplido" : "Acercate un poco mas a la diana",
+                precision: clamp01(1 - dist / 40),
                 reboteScore: scoreRebotesSinLimite(d.rebotes, 2, 0.35),
             };
         },
     },
     {
         id: "camp2",
-        nombre: "Nivel 2 - Bloqueo De Pasillo",
-        regla: "Detona en el pasillo principal (z 34-94) con al menos 1 rebote.",
+        nombre: "Nivel 2 - Precision Inicial",
+        regla: "Acerca la detonacion a la diana para subir el nivel.",
         evaluar: (d) => {
-            const inZona = d.posicion.z >= 34 && d.posicion.z <= 94 && Math.abs(d.posicion.x) <= 14;
-            const rebotesOk = d.rebotes >= 1;
-            const centro = new THREE.Vector3(0, 1, 64);
+            const dist = d.posicion.distanceTo(obtenerPosicionDiana());
             return {
-                ok: inZona && rebotesOk,
-                detalle: inZona ? (rebotesOk ? "Pasillo bloqueado" : "Necesitas al menos 1 rebote") : "No cayo en pasillo principal",
-                precision: clamp01(1 - d.posicion.distanceTo(centro) / 45),
+                ok: dist <= 20,
+                detalle: dist <= 20 ? "Objetivo cumplido" : "Detonacion demasiado lejos",
+                precision: clamp01(1 - dist / 34),
                 reboteScore: scoreRebotesSinLimite(d.rebotes, 2, 0.32),
             };
         },
     },
     {
         id: "camp3",
-        nombre: "Nivel 3 - Conector Izquierdo",
-        regla: "Detona en conector izquierdo (x -72 a -34, z -2 a 20) con 1 o mas rebotes.",
+        nombre: "Nivel 3 - Ajuste Fino",
+        regla: "Mayor precision: busca detonar mas cerca del centro de la diana.",
         evaluar: (d) => {
-            const inZona = d.posicion.x >= -72 && d.posicion.x <= -34 && d.posicion.z >= -2 && d.posicion.z <= 20;
-            const rebotesOk = d.rebotes >= 1;
-            const centro = new THREE.Vector3(-53, 1, 9);
+            const dist = d.posicion.distanceTo(obtenerPosicionDiana());
             return {
-                ok: inZona && rebotesOk,
-                detalle: inZona ? (rebotesOk ? "Conector cubierto" : "Rebotes fuera de rango") : "No cayo en el conector izquierdo",
-                precision: clamp01(1 - d.posicion.distanceTo(centro) / 35),
+                ok: dist <= 16,
+                detalle: dist <= 16 ? "Objetivo cumplido" : "Falta precision",
+                precision: clamp01(1 - dist / 28),
                 reboteScore: scoreRebotesSinLimite(d.rebotes, 2, 0.4),
             };
         },
     },
     {
         id: "camp4",
-        nombre: "Nivel 4 - Callejon Derecho",
-        regla: "Detona en callejon derecho (x 34-60, z 6-24) con 2 o mas rebotes.",
+        nombre: "Nivel 4 - Alta Precision",
+        regla: "Detona muy cerca de la diana para superar este nivel.",
         evaluar: (d) => {
-            const inZona = d.posicion.x >= 34 && d.posicion.x <= 60 && d.posicion.z >= 6 && d.posicion.z <= 24;
-            const rebotesOk = d.rebotes >= 2;
-            const centro = new THREE.Vector3(47, 1, 14);
+            const dist = d.posicion.distanceTo(obtenerPosicionDiana());
             return {
-                ok: inZona && rebotesOk,
-                detalle: inZona ? (rebotesOk ? "Callejon neutralizado" : "Necesitas mas rebotes") : "No cayo en callejon derecho",
-                precision: clamp01(1 - d.posicion.distanceTo(centro) / 28),
+                ok: dist <= 12,
+                detalle: dist <= 12 ? "Objetivo cumplido" : "Necesitas mas precision",
+                precision: clamp01(1 - dist / 22),
                 reboteScore: scoreRebotesSinLimite(d.rebotes, 3, 0.35),
             };
         },
     },
     {
         id: "camp5",
-        nombre: "Nivel 5 - Plantado De Precision",
-        regla: "Detona a 8m de la diana, con 2 o mas rebotes y antes de 5s.",
+        nombre: "Nivel 5 - Precision Maxima",
+        regla: "Solo cuenta si la detonacion queda muy pegada a la diana.",
         evaluar: (d) => {
             const dist = d.posicion.distanceTo(obtenerPosicionDiana());
-            const distanciaOk = dist <= 8;
-            const rebotesOk = d.rebotes >= 2;
-            const tiempoOk = d.vueloMs <= 5000;
             return {
-                ok: distanciaOk && rebotesOk && tiempoOk,
-                detalle: distanciaOk ? (rebotesOk ? (tiempoOk ? "Lineup perfecto" : "Lento: supera 5s") : "Rebotes fuera de rango") : "Lejos de la diana",
+                ok: dist <= 8,
+                detalle: dist <= 8 ? "Lineup perfecto" : "Lejos de la diana",
                 precision: clamp01(1 - dist / 16),
                 reboteScore: scoreRebotesSinLimite(d.rebotes, 3, 0.45),
             };
@@ -154,47 +144,45 @@ const OBJETIVOS_CAMPANA = [
 const OBJETIVOS_DAILY = [
     {
         id: "daily1",
-        nombre: "Daily - Precision Absoluta",
-        regla: "Detona a 6m de la diana. Los rebotes puntuan sin maximo.",
+        nombre: "Daily - Precision I",
+        regla: "Detona cerca de la diana para completar el reto diario.",
         evaluar: (d) => {
             const dist = d.posicion.distanceTo(obtenerPosicionDiana());
-            const ok = dist <= 6;
+            const ok = dist <= 10;
             return {
                 ok,
-                detalle: ok ? "Precision diaria cumplida" : "No cumpliste precision",
-                precision: clamp01(1 - dist / 12),
+                detalle: ok ? "Reto diario completado" : "Detonacion lejos de la diana",
+                precision: clamp01(1 - dist / 20),
                 reboteScore: scoreRebotesSinLimite(d.rebotes, 2, 0.35),
             };
         },
     },
     {
         id: "daily2",
-        nombre: "Daily - Timing De Entrada",
-        regla: "Detona en pasillo principal en menos de 4.5s y con 1+ rebote.",
+        nombre: "Daily - Precision II",
+        regla: "Aumenta la precision y acerca mas la detonacion.",
         evaluar: (d) => {
-            const inZona = d.posicion.z >= 34 && d.posicion.z <= 94 && Math.abs(d.posicion.x) <= 14;
-            const ok = inZona && d.vueloMs <= 4500 && d.rebotes >= 1;
+            const dist = d.posicion.distanceTo(obtenerPosicionDiana());
+            const ok = dist <= 8;
             return {
                 ok,
-                detalle: ok ? "Entrada bloqueada a tiempo" : "Fallo de zona, tiempo o rebotes",
-                precision: clamp01(1 - d.posicion.distanceTo(new THREE.Vector3(0, 1, 64)) / 50),
+                detalle: ok ? "Reto diario completado" : "Falta precision",
+                precision: clamp01(1 - dist / 16),
                 reboteScore: scoreRebotesSinLimite(d.rebotes, 2, 0.32),
             };
         },
     },
     {
         id: "daily3",
-        nombre: "Daily - Doble Zona",
-        regla: "Detona en conector izquierdo o callejon derecho con 1+ rebote.",
+        nombre: "Daily - Precision III",
+        regla: "Detona muy cerca del centro de la diana.",
         evaluar: (d) => {
-            const left = d.posicion.x >= -72 && d.posicion.x <= -34 && d.posicion.z >= -2 && d.posicion.z <= 20;
-            const right = d.posicion.x >= 34 && d.posicion.x <= 60 && d.posicion.z >= 6 && d.posicion.z <= 24;
-            const ok = (left || right) && d.rebotes >= 1;
-            const target = left ? new THREE.Vector3(-53, 1, 9) : new THREE.Vector3(47, 1, 14);
+            const dist = d.posicion.distanceTo(obtenerPosicionDiana());
+            const ok = dist <= 6;
             return {
                 ok,
-                detalle: ok ? "Zona tactica cubierta" : "No impactaste una zona valida",
-                precision: clamp01(1 - d.posicion.distanceTo(target) / 40),
+                detalle: ok ? "Reto diario completado" : "Necesitas una detonacion mas precisa",
+                precision: clamp01(1 - dist / 12),
                 reboteScore: scoreRebotesSinLimite(d.rebotes, 2, 0.32),
             };
         },
@@ -942,9 +930,8 @@ function mostrarResultado(score, evalObj, data) {
 
     document.getElementById('res-puntaje').innerText = `${score.total} pts`;
     document.getElementById('res-estrellas').innerText = "★".repeat(score.estrellas) + "☆".repeat(3 - score.estrellas);
-    const zona = score.impactoDiana ? score.impactoDiana.zona : "FUERA";
     document.getElementById('res-detalle').innerText =
-        `${evalObj.detalle} | Dist:${distDiana}m (${zona}) | B:${score.desglose.baseObjetivo} P:${score.desglose.precision} D:${score.desglose.precisionDiana} R:${score.desglose.rebotes} T:${score.desglose.tiempo} X:${score.desglose.bonusZonaDiana + score.desglose.bonusCombo + score.desglose.bonusControl}`;
+        `${evalObj.detalle} | Dist:${distDiana}m | B:${score.desglose.baseObjetivo} P:${score.desglose.precision} D:${score.desglose.precisionDiana} R:${score.desglose.rebotes} T:${score.desglose.tiempo} X:${score.desglose.bonusZonaDiana + score.desglose.bonusCombo + score.desglose.bonusControl}`;
 }
 
 function prepararCambioNivelPorAcierto(estrellas) {

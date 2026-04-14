@@ -70,7 +70,8 @@ function generarMapaAleatorio(semilla, opciones) {
     cajas_cache = [];
     zonas_navegables = [];
 
-    const perfilMapa = construirPerfilAbierto(rand, opts.modo === "DAILY");
+    const contexto = construirContextoGeneracion(opts);
+    const perfilMapa = construirPerfilAbierto(rand, opts.modo === "DAILY", contexto);
 
     const raiz = (opts.rootGroup && opts.rootGroup.isGroup) ? opts.rootGroup : new THREE.Group();
     if (!(opts.rootGroup && opts.rootGroup.isGroup)) scene.add(raiz);
@@ -82,7 +83,6 @@ function generarMapaAleatorio(semilla, opciones) {
     const nodos = construirEscenarioAbierto(raiz, perfilMapa, rand);
     poblarObstaculosAbiertos(raiz, perfilMapa, rand, nodos);
 
-    const contexto = construirContextoGeneracion(opts);
     const seleccion = seleccionarPosicionDianaInteligente(seedMapa, contexto);
 
     if (seleccion && seleccion.posicion) {
@@ -133,7 +133,7 @@ function generarMapaAleatorio(semilla, opciones) {
 
 }
 
-function construirPerfilAbierto(rand, diario) {
+function construirPerfilAbierto(rand, diario, contexto) {
     const temas = [
         {
             nombre: "Cantera seca",
@@ -179,10 +179,13 @@ function construirPerfilAbierto(rand, diario) {
 
     const tema = temas[Math.floor(rand() * temas.length)];
     const firma = Math.floor(rand() * 8);
-    const ramas = 5 + Math.floor(rand() * 4);
-    const radio = 56 + rand() * 34;
-    const expansion = 1.05 + rand() * 1.3;
-    const densidad = 0.9 + rand() * 1.1;
+    const alcance = (contexto && contexto.alcanceLanzamiento) ? contexto.alcanceLanzamiento : obtenerEnvolventeLanzamiento();
+    const escalaMapa = clamp((alcance.maxUtil - 65) / 70, 0, 1);
+    const ramas = 4 + Math.floor(rand() * 3) + Math.round(escalaMapa * 2);
+    const radioBase = lerp(46, 84, escalaMapa);
+    const radio = radioBase + rand() * lerp(16, 30, escalaMapa);
+    const expansion = lerp(0.95, 1.55, escalaMapa) + rand() * 0.35;
+    const densidad = lerp(1.24, 0.84, escalaMapa) + rand() * 0.36;
 
     return {
         nombre: diario ? `${tema.nombre} abierto · firma ${firma + 1}` : `Abierto firma ${firma + 1}`,
@@ -508,28 +511,43 @@ function construirContextoGeneracion(opts) {
     const modo = opts && opts.modo === "DAILY" ? "DAILY" : "CAMPANA";
     const nivelRaw = Number(opts && opts.nivelCampana);
     const nivelCampana = Math.max(1, Math.min(5, Number.isFinite(nivelRaw) ? Math.floor(nivelRaw) : 1));
+    const seedRaw = Number(opts && (opts.dianaSeed || opts.seed || 0));
+    const seedDaily = Math.floor(Math.abs(seedRaw || 1));
+    const randDaily = crearRngDeterminista(seedDaily * 43 + 19);
 
     const ratioObjetivo = modo === "DAILY"
         ? CONFIG_DIFICULTAD.DAILY_RATIO_OBJETIVO
         : CONFIG_DIFICULTAD.CAMPANA_RATIO_OBJETIVO[nivelCampana - 1];
 
+    const alcanceLanzamiento = obtenerEnvolventeLanzamiento();
     const minDistCamp = [58, 68, 78, 88, 96];
     const distIdealCamp = [96, 110, 124, 138, 150];
     const bloqueoCamp = [0.12, 0.16, 0.20, 0.24, 0.28];
 
-    const minDistTiro = modo === "DAILY" ? 72 : minDistCamp[nivelCampana - 1];
-    const distIdealTiro = modo === "DAILY" ? 122 : distIdealCamp[nivelCampana - 1];
+    const dailyDificultad = randDaily();
+    const minDistDaily = lerp(58, 90, dailyDificultad);
+    const idealDistDaily = lerp(98, 152, dailyDificultad);
+
+    const minDistBase = modo === "DAILY" ? minDistDaily : minDistCamp[nivelCampana - 1];
+    const distIdealBase = modo === "DAILY" ? idealDistDaily : distIdealCamp[nivelCampana - 1];
+    const minDistCap = Math.max(DIST_MIN_DIANA_TIRO + 4, alcanceLanzamiento.maxUtil - 36);
+    const idealCap = Math.max(minDistCap + 8, alcanceLanzamiento.maxUtil - 10);
+
+    const minDistTiro = clamp(minDistBase, DIST_MIN_DIANA_TIRO + 4, minDistCap);
+    const distIdealTiro = clamp(distIdealBase, minDistTiro + 8, idealCap);
     const bloqueoObjetivo = modo === "DAILY" ? 0.18 : bloqueoCamp[nivelCampana - 1];
 
     return {
         modo,
         nivelCampana,
+        alcanceLanzamiento,
         ratioObjetivo,
         tagPreferido: obtenerTagPreferidoDiana(modo, nivelCampana),
         radioDiana: 5.6,
         minDistTiro,
         distIdealTiro,
         bloqueoObjetivo,
+        dificultadDaily: modo === "DAILY" ? dailyDificultad : null,
     };
 }
 
@@ -650,7 +668,9 @@ function puntuarCandidatoDiana(candidato, contexto) {
     const nearScore = 1 - clamp(Math.abs(obsNear - objetivoNear) / (objetivoNear + 2), 0, 1);
     const midScore = 1 - clamp(Math.abs(obsMid - objetivoMid) / (objetivoMid + 3), 0, 1);
     const distanciaCentro = Math.hypot(candidato.x, candidato.z);
-    const spreadScore = clamp((distanciaCentro - 18) / 90, 0, 1);
+    const alcance = (contexto && contexto.alcanceLanzamiento) ? contexto.alcanceLanzamiento : obtenerEnvolventeLanzamiento();
+    const objetivoCentro = clamp(contexto.distIdealTiro * 0.55, 24, alcance.maxUtil * 0.78);
+    const spreadScore = 1 - clamp(Math.abs(distanciaCentro - objetivoCentro) / Math.max(16, objetivoCentro * 0.65), 0, 1);
 
     return tagScore * 0.24 + bordeScore * 0.24 + nearScore * 0.24 + midScore * 0.18 + spreadScore * 0.10;
 }
@@ -853,7 +873,7 @@ function contarArcosViables(origen, target, cfg) {
     const dir = target.clone().sub(origen).normalize();
     const yawBase = Math.atan2(-dir.x, -dir.z);
 
-    const VEL = (typeof VEL_LANZAM === "number") ? VEL_LANZAM : 1.15;
+    const VEL = obtenerVelocidadReferenciaGenerador();
     const YALZ = (typeof IMPULSO_Y === "number") ? IMPULSO_Y : 0.0;
 
     let viables = 0;
@@ -1006,6 +1026,55 @@ function mostrarDificultad(score, viables, total, nombrePerfil) {
 
     const perfilTxt = nombrePerfil ? ` | ${nombrePerfil}` : "";
     document.getElementById('instrucciones').innerText = `Pulsa ESPACIO para apuntar desde la posicion encontrada${perfilTxt}`;
+}
+
+function obtenerVelocidadReferenciaGenerador() {
+    const vMin = (typeof VEL_LANZAM_MIN === "number") ? VEL_LANZAM_MIN : 0.72;
+    const vMax = (typeof VEL_LANZAM_MAX === "number") ? VEL_LANZAM_MAX : 1.58;
+    const vBase = (typeof VEL_LANZAM === "number") ? VEL_LANZAM : ((vMin + vMax) * 0.5);
+    const ref = Math.max(vBase, vMin + (vMax - vMin) * 0.72);
+    return clamp(ref, vMin, vMax);
+}
+
+function obtenerEnvolventeLanzamiento() {
+    const vMin = (typeof VEL_LANZAM_MIN === "number") ? VEL_LANZAM_MIN : 0.72;
+    const vMax = (typeof VEL_LANZAM_MAX === "number") ? VEL_LANZAM_MAX : 1.58;
+    const y0 = 6.6;
+    const pitches = [0.16, 0.24, 0.32, 0.40, 0.48, 0.56, 0.64];
+
+    const alcancePlano = (v0) => {
+        let mejor = 0;
+
+        for (const p of pitches) {
+            let x = 0;
+            let y = y0;
+            let vx = Math.cos(p) * v0;
+            let vy = Math.sin(p) * v0;
+
+            for (let step = 0; step < 360; step++) {
+                vy -= 0.016;
+                vx *= 0.9975;
+                vy *= 0.9975;
+
+                x += Math.abs(vx);
+                y += vy;
+
+                if (y <= 0.5) break;
+            }
+
+            if (x > mejor) mejor = x;
+        }
+
+        return mejor;
+    };
+
+    const alcanceMin = alcancePlano(vMin);
+    const alcanceMax = alcancePlano(vMax);
+
+    return {
+        minUtil: Math.max(DIST_MIN_DIANA_TIRO, alcanceMin * 0.76),
+        maxUtil: Math.max(DIST_MIN_DIANA_TIRO + 24, alcanceMax * 0.84),
+    };
 }
 
 function crearRngDeterminista(seed) {
